@@ -32,3 +32,23 @@ export function chordStr(c) {
   if (!c) return null;
   return c.root + c.qual + (c.bass ? "/" + c.bass : "");
 }
+
+// ─── Print processing functions ───────────────────────────────
+
+/**
+ * Returns true if two sections have the same bar count and identical chord
+ * at every beat position.
+ */
+export function sectionsEqual(a, b, timeSig) {
+  if (a.bars !== b.bars) return false;
+  const nb = beatsPerBar(timeSig);
+  for (let bar = 0; bar < a.bars; bar++) {
+    for (let beat = 0; beat < nb; beat++) {
+      const k = `${bar}-${beat}`;
+      const ca = chordStr(a.chords[k] || null);
+      const cb = chordStr(b.chords[k] || null);
+      if (ca !== cb) return false;
+    }
+  }
+  return true;
+}
