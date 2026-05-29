@@ -73,7 +73,7 @@ input, select, textarea {
     display: none !important;
   }
   @page {
-    margin: 1.5cm;
+    margin: 14mm;
     size: A4;
   }
 }
@@ -91,5 +91,124 @@ input, select, textarea {
   }
   .print-view {
     display: block !important;
+  }
+}
+
+/* ─── Print View layout ──────────────────────────────────────── */
+.print-view .page {
+  background: #ffffff;
+  width: 920px;
+  max-width: calc(100% - 32px);
+  margin: 32px auto;
+  padding: 44px 54px 64px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 12px 36px rgba(0,0,0,.07);
+  color: #1a1a1a;
+}
+
+.print-view .pv-runhead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  letter-spacing: .2px;
+  color: #1a1a1a;
+}
+.print-view .pv-runhead .pv-brand { font-weight: 600; }
+
+.print-view .pv-title {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-weight: 700;
+  font-size: 46px;
+  line-height: 1.05;
+  margin: 56px 0 0;
+  letter-spacing: -.5px;
+  color: #1a1a1a;
+}
+.print-view .pv-artist {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 26px;
+  color: #6b6b6b;
+  margin: 14px 0 0;
+}
+.print-view .pv-meta {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 20px;
+  color: #6b6b6b;
+  margin: 12px 0 0;
+}
+.print-view .pv-divider {
+  border: 0;
+  border-top: 1px solid #e2e2e0;
+  margin: 30px 0 8px;
+}
+
+.print-view .pv-section { margin-top: 34px; }
+.print-view .pv-section-name {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-weight: 700;
+  font-size: 27px;
+  letter-spacing: 2px;
+  margin: 0 0 14px;
+}
+
+.print-view .pv-line-block {
+  border-left: 4px solid currentColor;
+  padding-left: 16px;
+  margin-bottom: 18px;
+}
+.print-view .pv-line-block:last-child { margin-bottom: 0; }
+
+.print-view .pv-line-label {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-weight: 700;
+  font-size: 19px;
+  margin: 0 0 4px;
+}
+
+.print-view .pv-bars {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 22px;
+  color: #1a1a1a;
+  row-gap: 8px;
+}
+.print-view .pv-bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .6ch;
+  min-width: var(--bar-w, 8ch);
+  border-left: 1px solid #1a1a1a;
+  padding: 0 1ch;
+}
+.print-view .pv-bars .pv-endbar {
+  width: 0;
+  border-left: 1px solid #1a1a1a;
+  align-self: stretch;
+  min-height: 1.2em;
+}
+.print-view .pv-beat {
+  text-align: left;
+  white-space: nowrap;
+  color: #1a1a1a;
+}
+.print-view .pv-repeat {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-weight: 700;
+  font-size: 20px;
+  margin-left: 12px;
+  align-self: center;
+}
+
+@media print {
+  .print-view .page {
+    box-shadow: none;
+    margin: 0;
+    width: auto;
+    max-width: none;
+    padding: 0;
   }
 }

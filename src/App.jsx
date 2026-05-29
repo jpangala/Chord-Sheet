@@ -627,107 +627,106 @@ function EditorScreen({ song, sections, addSection, removeSection, duplicateSect
 // ─────────────────────────────────────────────────────────────
 function PrintView({ song, sections }) {
   const timeSig = song.timeSig;
+  const nb = beatsPerBar(timeSig);
   const runs = detectDuplicateRuns(sections, timeSig);
   const typeGroups = groupByConsecutiveType(runs);
 
+  // Convert a section's chords dict into an array of beat-string arrays, one per bar.
+  function getSectionBars(section) {
+    const bars = [];
+    for (let bi = 0; bi < section.bars; bi++) {
+      const beatArr = [];
+      for (let beat = 0; beat < nb; beat++) {
+        const chord = section.chords[`${bi}-${beat}`];
+        beatArr.push(chordStr(chord) || '.');
+      }
+      bars.push(beatArr);
+    }
+    return bars;
+  }
+
+  // Compute --bar-w: find the ch-width of the densest bar across all sections.
+  // GAP_CH=1 matches the ch-unit gap budget; +2 covers the 1ch left+right padding.
+  const GAP_CH = 1;
+  let maxCh = 4;
+  sections.forEach(sec => {
+    for (let bi = 0; bi < sec.bars; bi++) {
+      let tokenLen = 0;
+      for (let beat = 0; beat < nb; beat++) {
+        const chord = sec.chords[`${bi}-${beat}`];
+        tokenLen += (chordStr(chord) || '.').length;
+      }
+      maxCh = Math.max(maxCh, tokenLen + (nb - 1) * GAP_CH);
+    }
+  });
+  const barW = (maxCh + 2).toFixed(2) + 'ch';
+
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const dateStr = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${String(now.getFullYear()).slice(-2)}, ${pad(now.getHours())}.${pad(now.getMinutes())}`;
+
+  const metaBits = [];
+  if (song.key)    metaBits.push('Key: ' + song.key);
+  if (song.bpm)    metaBits.push('BPM: ' + song.bpm);
+  if (song.timeSig) metaBits.push('Time: ' + song.timeSig);
+
   return (
-    <div className="print-view" style={{
-      fontFamily: 'Georgia, "Times New Roman", serif',
-      color: '#1A1A18',
-      background: 'white',
-    }}>
-      {/* ── Song header ── */}
-      <div style={{ marginBottom: '0.75rem' }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0, lineHeight: 1.2 }}>
-          {song.title}
-        </h1>
-        {song.artist && (
-          <p style={{ fontSize: 13, color: '#555', margin: '2px 0 0' }}>
-            {song.artist}
-          </p>
+    <div className="print-view">
+      <div className="page" style={{ '--bar-w': barW }}>
+
+        {/* Running header */}
+        <div className="pv-runhead">
+          <span className="pv-brand">ChordSheet</span>
+          <span className="pv-date">{dateStr}</span>
+        </div>
+
+        {/* Title block */}
+        <h1 className="pv-title">{song.title}</h1>
+        {song.artist && <p className="pv-artist">{song.artist}</p>}
+        {metaBits.length > 0 && (
+          <p className="pv-meta">{metaBits.join('  ·  ')}</p>
         )}
-        <p style={{ fontSize: 11, color: '#888', margin: '4px 0 0' }}>
-          Key: {song.key} · BPM: {song.bpm} · Time: {song.timeSig}
-        </p>
-      </div>
-      <hr style={{ border: 'none', borderTop: '1px solid #ddd', marginBottom: '0.75rem' }} />
+        <hr className="pv-divider" />
 
-      {/* ── Type groups ── */}
-      {typeGroups.map((group, gi) => (
-        <div key={`${group.type}-${gi}`} style={{ marginBottom: 16 }}>
+        {/* Sections */}
+        {typeGroups.map((group, gi) => (
+          <section key={`${group.type}-${gi}`} className="pv-section">
+            <h2 className="pv-section-name" style={{ color: group.accentColor }}>
+              {group.type.toUpperCase()}
+            </h2>
 
-          {/* Section type heading — appears once per consecutive group */}
-          <div style={{
-            fontWeight: 700,
-            fontSize: 12,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: group.accentColor,
-            marginBottom: 4,
-          }}>
-            {group.type}
-          </div>
-
-          {/* One entry per run (may be a collapsed duplicate group) */}
-          {group.entries.map((run, ri) => {
-            const rows = renderBarRows(run.representative, timeSig);
-            const label = run.labels.join(' · ');
-
-            // Show part label when: section has a custom label, OR there are
-            // multiple entries under this type heading, OR the run collapsed >1 section
-            const showLabel =
-              run.representative.label !== '' ||
-              group.entries.length > 1 ||
-              run.count > 1;
-
-            return (
-              <div
-                key={run.representative.id || ri}
-                style={{
-                  borderLeft: `2px solid ${group.accentColor}`,
-                  paddingLeft: 8,
-                  marginBottom: ri < group.entries.length - 1 ? 7 : 0,
-                }}
-              >
-                {showLabel && (
-                  <div style={{
-                    fontSize: 10,
-                    fontWeight: 600,
-                    color: group.accentColor,
-                    marginBottom: 1,
-                  }}>
-                    {label}
-                  </div>
-                )}
-
-                {rows.map((rowStr, rowi) => (
-                  <div key={`row-${rowi}`} style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                    <span style={{
-                      fontFamily: 'monospace',
-                      fontSize: 10,
-                      color: '#333',
-                      whiteSpace: 'pre',
-                    }}>
-                      {rowStr}
-                    </span>
-                    {/* ×N suffix — only on the first row, only when count > 1 */}
-                    {rowi === 0 && run.count > 1 && (
-                      <span style={{
-                        fontWeight: 700,
-                        fontSize: 10,
-                        color: group.accentColor,
-                        fontFamily: 'Georgia, serif',
-                      }}>
-                        ×{run.count}
+            {group.entries.map((run, ri) => {
+              const bars = getSectionBars(run.representative);
+              const label = (run.representative.label || '').trim();
+              return (
+                <div
+                  key={run.representative.id || ri}
+                  className="pv-line-block"
+                  style={{ color: group.accentColor }}
+                >
+                  {label && <div className="pv-line-label">{label}</div>}
+                  <div className="pv-bars">
+                    {bars.map((beatArr, bi) => (
+                      <div key={`b${bi}`} className="pv-bar">
+                        {beatArr.map((v, vi) => (
+                          <span key={`v${vi}`} className="pv-beat">{v}</span>
+                        ))}
+                      </div>
+                    ))}
+                    <span className="pv-endbar" />
+                    {run.count > 1 && (
+                      <span className="pv-repeat" style={{ color: group.accentColor }}>
+                        &times;{run.count}
                       </span>
                     )}
                   </div>
-                ))}
-              </div>
-            );
-          })}
-        </div>
-      ))}
+                </div>
+              );
+            })}
+          </section>
+        ))}
+
+      </div>
     </div>
   );
 }
