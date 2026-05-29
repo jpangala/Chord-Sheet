@@ -654,7 +654,7 @@ function PrintView({ song, sections }) {
 
       {/* ── Type groups ── */}
       {typeGroups.map((group, gi) => (
-        <div key={gi} style={{ marginBottom: 16 }}>
+        <div key={`${group.type}-${gi}`} style={{ marginBottom: 16 }}>
 
           {/* Section type heading — appears once per consecutive group */}
           <div style={{
@@ -682,7 +682,7 @@ function PrintView({ song, sections }) {
 
             return (
               <div
-                key={ri}
+                key={run.representative.id || ri}
                 style={{
                   borderLeft: `2px solid ${group.accentColor}`,
                   paddingLeft: 8,
@@ -701,7 +701,7 @@ function PrintView({ song, sections }) {
                 )}
 
                 {rows.map((rowStr, rowi) => (
-                  <div key={rowi} style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  <div key={`row-${rowi}`} style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
                     <span style={{
                       fontFamily: 'monospace',
                       fontSize: 10,
