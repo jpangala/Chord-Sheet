@@ -156,3 +156,62 @@ describe('groupByConsecutiveType', () => {
     expect(result[0].textColor).toBe('#333')
   })
 })
+
+import { renderBarRows } from './printUtils.js'
+
+describe('renderBarRows', () => {
+  it('renders a single 4/4 bar with one chord and three empty beats', () => {
+    const section = { bars: 1, chords: { '0-0': { root: 'C', qual: '', bass: '' } } }
+    const rows = renderBarRows(section, '4/4')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toBe('| C . . . |')
+  })
+
+  it('renders a single 3/4 bar with two chords', () => {
+    const section = {
+      bars: 1,
+      chords: {
+        '0-0': { root: 'G', qual: '', bass: '' },
+        '0-1': { root: 'Ebm', qual: '', bass: '' },
+      },
+    }
+    const rows = renderBarRows(section, '3/4')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toBe('| G Ebm . |')
+  })
+
+  it('renders a bar with all empty beats as dots', () => {
+    const section = { bars: 1, chords: {} }
+    const rows = renderBarRows(section, '3/4')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toBe('| . . . |')
+  })
+
+  it('pads beat columns to max chord width across all bars', () => {
+    const section = {
+      bars: 2,
+      chords: {
+        '0-0': { root: 'C', qual: '', bass: '' },
+        '1-0': { root: 'Csus2', qual: '', bass: '' },
+      },
+    }
+    const rows = renderBarRows(section, '4/4')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toBe('| C     . . . | | Csus2 . . . |')
+  })
+
+  it('splits into two rows when there are 5 bars', () => {
+    const section = { bars: 5, chords: {} }
+    const rows = renderBarRows(section, '4/4')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toBe('| . . . . | | . . . . | | . . . . | | . . . . |')
+    expect(rows[1]).toBe('| . . . . |')
+  })
+
+  it('renders a slash chord correctly', () => {
+    const section = { bars: 1, chords: { '0-0': { root: 'Adim7', qual: '', bass: 'Eb' } } }
+    const rows = renderBarRows(section, '3/4')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toBe('| Adim7/Eb . . |')
+  })
+})

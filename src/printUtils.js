@@ -123,3 +123,47 @@ export function groupByConsecutiveType(runs) {
   groups.push(current);
   return groups;
 }
+
+const PRINT_COLS = 4; // bars per row in the print view
+
+/**
+ * Renders a section's bars as an array of pipe-notation strings.
+ * Each string is one row of up to PRINT_COLS bars.
+ * Beat columns are padded to the max chord-string length at that position
+ * across ALL bars in the section.
+ *
+ * Format: "| beat0 beat1 … | | beat0 beat1 … |"
+ *
+ * @param {{ bars: number, chords: Object }} section
+ * @param {string} timeSig  e.g. "3/4"
+ * @returns {string[]}
+ */
+export function renderBarRows(section, timeSig) {
+  const nb = beatsPerBar(timeSig);
+
+  // Compute the max label width for each beat position across all bars
+  const colWidths = Array(nb).fill(1);
+  for (let bar = 0; bar < section.bars; bar++) {
+    for (let beat = 0; beat < nb; beat++) {
+      const chord = section.chords[`${bar}-${beat}`];
+      const label = chordStr(chord) || '.';
+      if (label.length > colWidths[beat]) colWidths[beat] = label.length;
+    }
+  }
+
+  const rows = [];
+  for (let rowStart = 0; rowStart < section.bars; rowStart += PRINT_COLS) {
+    const rowEnd = Math.min(rowStart + PRINT_COLS, section.bars);
+    const barStrs = [];
+    for (let bar = rowStart; bar < rowEnd; bar++) {
+      const beats = Array.from({ length: nb }, (_, bi) => {
+        const chord = section.chords[`${bar}-${bi}`];
+        const label = chordStr(chord) || '.';
+        return label.padEnd(colWidths[bi]);
+      }).join(' ');
+      barStrs.push(`| ${beats} |`);
+    }
+    rows.push(barStrs.join(' '));
+  }
+  return rows;
+}
