@@ -1,4 +1,4 @@
-import { SEC_COLORS, beatsPerBar, chordStr } from './printUtils.js';
+import { SEC_COLORS, beatsPerBar, chordStr, detectDuplicateRuns, groupByConsecutiveType, renderBarRows } from './printUtils.js';
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── Constants ────────────────────────────────────────────────
@@ -494,7 +494,7 @@ function EditorScreen({ song, sections, addSection, removeSection, duplicateSect
   const [confirmClear, setConfirmClear] = useState(false);
 
   return (
-    <div style={{ maxWidth: 960, margin: "0 auto", padding: "1.5rem 1rem 5rem" }}>
+    <div className="editor-screen" style={{ maxWidth: 960, margin: "0 auto", padding: "1.5rem 1rem 5rem" }}>
       {/* ── Page header ── */}
       <div style={{
         display: "flex", alignItems: "flex-start", justifyContent: "space-between",
@@ -623,6 +623,116 @@ function EditorScreen({ song, sections, addSection, removeSection, duplicateSect
 }
 
 // ─────────────────────────────────────────────────────────────
+// Print View  (hidden on screen — visible only when printing)
+// ─────────────────────────────────────────────────────────────
+function PrintView({ song, sections }) {
+  const timeSig = song.timeSig;
+  const runs = detectDuplicateRuns(sections, timeSig);
+  const typeGroups = groupByConsecutiveType(runs);
+
+  return (
+    <div className="print-view" style={{
+      fontFamily: 'Georgia, "Times New Roman", serif',
+      color: '#1A1A18',
+      background: 'white',
+    }}>
+      {/* ── Song header ── */}
+      <div style={{ marginBottom: '0.75rem' }}>
+        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0, lineHeight: 1.2 }}>
+          {song.title}
+        </h1>
+        {song.artist && (
+          <p style={{ fontSize: 13, color: '#555', margin: '2px 0 0' }}>
+            {song.artist}
+          </p>
+        )}
+        <p style={{ fontSize: 11, color: '#888', margin: '4px 0 0' }}>
+          Key: {song.key} · BPM: {song.bpm} · Time: {song.timeSig}
+        </p>
+      </div>
+      <hr style={{ border: 'none', borderTop: '1px solid #ddd', marginBottom: '0.75rem' }} />
+
+      {/* ── Type groups ── */}
+      {typeGroups.map((group, gi) => (
+        <div key={gi} style={{ marginBottom: 16 }}>
+
+          {/* Section type heading — appears once per consecutive group */}
+          <div style={{
+            fontWeight: 700,
+            fontSize: 12,
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+            color: group.accentColor,
+            marginBottom: 4,
+          }}>
+            {group.type}
+          </div>
+
+          {/* One entry per run (may be a collapsed duplicate group) */}
+          {group.entries.map((run, ri) => {
+            const rows = renderBarRows(run.representative, timeSig);
+            const label = run.labels.join(' · ');
+
+            // Show part label when: section has a custom label, OR there are
+            // multiple entries under this type heading, OR the run collapsed >1 section
+            const showLabel =
+              run.representative.label !== '' ||
+              group.entries.length > 1 ||
+              run.count > 1;
+
+            return (
+              <div
+                key={ri}
+                style={{
+                  borderLeft: `2px solid ${group.accentColor}`,
+                  paddingLeft: 8,
+                  marginBottom: ri < group.entries.length - 1 ? 7 : 0,
+                }}
+              >
+                {showLabel && (
+                  <div style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: group.accentColor,
+                    marginBottom: 1,
+                  }}>
+                    {label}
+                  </div>
+                )}
+
+                {rows.map((rowStr, rowi) => (
+                  <div key={rowi} style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                    <span style={{
+                      fontFamily: 'monospace',
+                      fontSize: 10,
+                      color: '#333',
+                      whiteSpace: 'pre',
+                    }}>
+                      {rowStr}
+                    </span>
+                    {/* ×N suffix — only on the first row, only when count > 1 */}
+                    {rowi === 0 && run.count > 1 && (
+                      <span style={{
+                        fontWeight: 700,
+                        fontSize: 10,
+                        color: group.accentColor,
+                        fontFamily: 'Georgia, serif',
+                      }}>
+                        ×{run.count}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Root App
 // ─────────────────────────────────────────────────────────────
 export default function App() {
@@ -725,6 +835,9 @@ export default function App() {
           onBackToSetup={() => setView("setup")}
           onNewSong={handleNewSong}
         />
+      )}
+      {view === "editor" && (
+        <PrintView song={song} sections={sections} />
       )}
       {picker && (
         <ChordPicker
