@@ -111,3 +111,48 @@ describe('detectDuplicateRuns', () => {
     expect(result[0].labels).toEqual(['Outro'])
   })
 })
+
+import { groupByConsecutiveType } from './printUtils.js'
+
+describe('groupByConsecutiveType', () => {
+  const makeRun = (type, label = '') => ({
+    representative: { type, label, bars: 4, chords: {} },
+    count: 1,
+    labels: [label || type],
+  })
+
+  it('returns [] for empty input', () => {
+    expect(groupByConsecutiveType([])).toEqual([])
+  })
+
+  it('returns one group with correct colors for a single run', () => {
+    const result = groupByConsecutiveType([makeRun('Intro', 'Part 1')])
+    expect(result).toHaveLength(1)
+    expect(result[0].type).toBe('Intro')
+    expect(result[0].accentColor).toBe('#185FA5')
+    expect(result[0].textColor).toBe('#0C447C')
+    expect(result[0].entries).toHaveLength(1)
+  })
+
+  it('merges consecutive runs of the same type into one group', () => {
+    const runs = [makeRun('Intro', 'Part 1'), makeRun('Intro', 'Part 2')]
+    const result = groupByConsecutiveType(runs)
+    expect(result).toHaveLength(1)
+    expect(result[0].entries).toHaveLength(2)
+  })
+
+  it('creates separate groups for non-consecutive same types', () => {
+    const runs = [makeRun('Verse'), makeRun('Chorus'), makeRun('Verse')]
+    const result = groupByConsecutiveType(runs)
+    expect(result).toHaveLength(3)
+    expect(result[0].type).toBe('Verse')
+    expect(result[1].type).toBe('Chorus')
+    expect(result[2].type).toBe('Verse')
+  })
+
+  it('uses fallback colors for unknown section types', () => {
+    const result = groupByConsecutiveType([makeRun('Unknown')])
+    expect(result[0].accentColor).toBe('#888')
+    expect(result[0].textColor).toBe('#333')
+  })
+})

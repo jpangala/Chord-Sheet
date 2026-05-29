@@ -84,3 +84,42 @@ export function detectDuplicateRuns(sections, timeSig) {
   runs.push(current);
   return runs;
 }
+
+/**
+ * Groups consecutive runs that share the same section type.
+ * @param {{ representative: Object, count: number, labels: string[] }[]} runs
+ * @returns {{ type: string, accentColor: string, textColor: string, entries: Object[] }[]}
+ */
+export function groupByConsecutiveType(runs) {
+  if (!runs.length) return [];
+
+  const getColors = (type) => {
+    const c = SEC_COLORS[type];
+    return c
+      ? { accentColor: c[1], textColor: c[2] }
+      : { accentColor: '#888', textColor: '#333' };
+  };
+
+  const groups = [];
+  let current = {
+    type: runs[0].representative.type,
+    ...getColors(runs[0].representative.type),
+    entries: [runs[0]],
+  };
+
+  for (let i = 1; i < runs.length; i++) {
+    const run = runs[i];
+    if (run.representative.type === current.type) {
+      current.entries.push(run);
+    } else {
+      groups.push(current);
+      current = {
+        type: run.representative.type,
+        ...getColors(run.representative.type),
+        entries: [run],
+      };
+    }
+  }
+  groups.push(current);
+  return groups;
+}
