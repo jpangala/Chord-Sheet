@@ -52,3 +52,35 @@ export function sectionsEqual(a, b, timeSig) {
   }
   return true;
 }
+
+/**
+ * Collapses consecutive identical sections into runs.
+ * @param {Object[]} sections
+ * @param {string} timeSig
+ * @returns {{ representative: Object, count: number, labels: string[] }[]}
+ */
+export function detectDuplicateRuns(sections, timeSig) {
+  if (!sections.length) return [];
+  const runs = [];
+  let current = {
+    representative: sections[0],
+    count: 1,
+    labels: [sections[0].label || sections[0].type],
+  };
+  for (let i = 1; i < sections.length; i++) {
+    const s = sections[i];
+    if (sectionsEqual(s, current.representative, timeSig)) {
+      current.count++;
+      current.labels.push(s.label || s.type);
+    } else {
+      runs.push(current);
+      current = {
+        representative: s,
+        count: 1,
+        labels: [s.label || s.type],
+      };
+    }
+  }
+  runs.push(current);
+  return runs;
+}

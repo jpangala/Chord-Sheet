@@ -47,3 +47,67 @@ describe('sectionsEqual', () => {
     expect(sectionsEqual(makeSection('V','',1,a), makeSection('V','',1,b), '3/4')).toBe(true)
   })
 })
+
+import { detectDuplicateRuns } from './printUtils.js'
+
+describe('detectDuplicateRuns', () => {
+  const ts = '4/4'
+
+  it('returns [] for empty input', () => {
+    expect(detectDuplicateRuns([], ts)).toEqual([])
+  })
+
+  it('returns one run of count 1 for a single unique section', () => {
+    const s = makeSection('Verse', 'Bait 1', 4)
+    const result = detectDuplicateRuns([s], ts)
+    expect(result).toHaveLength(1)
+    expect(result[0].count).toBe(1)
+    expect(result[0].labels).toEqual(['Bait 1'])
+    expect(result[0].representative).toBe(s)
+  })
+
+  it('collapses two consecutive identical sections', () => {
+    const chords = { '0-0': { root: 'C', qual: '', bass: '' } }
+    const s1 = makeSection('Verse', 'Part 1', 4, chords)
+    const s2 = makeSection('Verse', 'Part 2', 4, chords)
+    const result = detectDuplicateRuns([s1, s2], ts)
+    expect(result).toHaveLength(1)
+    expect(result[0].count).toBe(2)
+    expect(result[0].labels).toEqual(['Part 1', 'Part 2'])
+    expect(result[0].representative).toBe(s1)
+  })
+
+  it('does NOT collapse non-consecutive identical sections', () => {
+    const chords = { '0-0': { root: 'C', qual: '', bass: '' } }
+    const s1 = makeSection('Verse', 'Part 1', 4, chords)
+    const s2 = makeSection('Chorus', 'Chorus', 4, {})
+    const s3 = makeSection('Verse', 'Part 3', 4, chords)
+    const result = detectDuplicateRuns([s1, s2, s3], ts)
+    expect(result).toHaveLength(3)
+    expect(result[0].count).toBe(1)
+    expect(result[1].count).toBe(1)
+    expect(result[2].count).toBe(1)
+  })
+
+  it('collapses a run of 6, leaving a unique 7th as its own run', () => {
+    const sameChords = { '0-0': { root: 'Adim7', qual: '', bass: 'Eb' } }
+    const diffChords = { '0-0': { root: 'Adim7', qual: '', bass: 'F#' } }
+    const sections = [
+      ...Array.from({ length: 6 }, (_, i) =>
+        makeSection('Outro', `Outro ${i + 1}`, 4, sameChords)
+      ),
+      makeSection('Outro', 'Outro copy', 4, diffChords),
+    ]
+    const result = detectDuplicateRuns(sections, ts)
+    expect(result).toHaveLength(2)
+    expect(result[0].count).toBe(6)
+    expect(result[1].count).toBe(1)
+    expect(result[1].labels).toEqual(['Outro copy'])
+  })
+
+  it('falls back to type as label when section.label is empty', () => {
+    const s = makeSection('Outro', '', 4)
+    const result = detectDuplicateRuns([s], ts)
+    expect(result[0].labels).toEqual(['Outro'])
+  })
+})
