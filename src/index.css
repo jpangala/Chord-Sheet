@@ -77,3 +77,19 @@ input, select, textarea {
     size: A4;
   }
 }
+
+/* ─── Print / Screen toggle ──────────────────────────────────── */
+@media screen {
+  .print-view {
+    display: none;
+  }
+}
+
+@media print {
+  .editor-screen {
+    display: none !important;
+  }
+  .print-view {
+    display: block !important;
+  }
+}
