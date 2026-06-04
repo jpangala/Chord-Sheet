@@ -33,6 +33,66 @@ export function chordStr(c) {
   return c.root + c.qual + (c.bass ? "/" + c.bass : "");
 }
 
+// ─── Transpose ────────────────────────────────────────────────
+
+const SHARP_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const FLAT_NAMES  = ["C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"];
+// Tonics whose key signatures conventionally use flats.
+const FLAT_KEY_TONICS = new Set(["F","Bb","Eb","Ab","Db","Gb"]);
+
+/** Chromatic index 0-11 for a note name, or -1 if unknown. */
+function chromaticIndex(name) {
+  if (!name) return -1;
+  const i = SHARP_NAMES.indexOf(name);
+  if (i >= 0) return i;
+  const j = FLAT_NAMES.indexOf(name);
+  return j >= 0 ? j : -1;
+}
+
+function spell(rawIdx, useFlats) {
+  const idx = ((rawIdx % 12) + 12) % 12;
+  return (useFlats ? FLAT_NAMES : SHARP_NAMES)[idx];
+}
+
+/**
+ * Returns a new song with `key`, every chord root, and every chord bass shifted
+ * by `semitones`. Enharmonic spelling for the new key is chosen by convention:
+ * if the new tonic naturally spells as a flat (Bb, Eb, Ab, Db, Gb, F), flats
+ * are used across all chords; otherwise sharps. Chord qualities are untouched.
+ *
+ * @param {Object} song    A song record with .key and .sections[].chords.
+ * @param {number} semitones  Signed integer; positive = up, negative = down.
+ */
+export function transposeSong(song, semitones) {
+  if (!semitones) return song;
+  const oldKeyIdx = chromaticIndex(song.key);
+  if (oldKeyIdx < 0) return song;
+
+  const newKeyIdx = (((oldKeyIdx + semitones) % 12) + 12) % 12;
+  const flatSpelling = FLAT_NAMES[newKeyIdx];
+  const useFlats = FLAT_KEY_TONICS.has(flatSpelling);
+  const newKey = spell(newKeyIdx, useFlats);
+
+  const newSections = song.sections.map((sec) => {
+    const newChords = {};
+    for (const [k, chord] of Object.entries(sec.chords || {})) {
+      if (!chord) continue;
+      const rIdx = chromaticIndex(chord.root);
+      if (rIdx < 0) { newChords[k] = chord; continue; }
+      const newRoot = spell(rIdx + semitones, useFlats);
+      let newBass = chord.bass || "";
+      if (newBass) {
+        const bIdx = chromaticIndex(newBass);
+        if (bIdx >= 0) newBass = spell(bIdx + semitones, useFlats);
+      }
+      newChords[k] = { ...chord, root: newRoot, bass: newBass };
+    }
+    return { ...sec, chords: newChords };
+  });
+
+  return { ...song, key: newKey, sections: newSections };
+}
+
 // ─── Print processing functions ───────────────────────────────
 
 /**

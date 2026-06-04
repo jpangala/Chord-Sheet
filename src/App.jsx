@@ -1,5 +1,8 @@
-import { SEC_COLORS, beatsPerBar, chordStr, detectDuplicateRuns, groupByConsecutiveType, renderBarRows } from './printUtils.js';
+import { SEC_COLORS, beatsPerBar, chordStr, detectDuplicateRuns, groupByConsecutiveType, renderBarRows, transposeSong } from './printUtils.js';
+import { cloudDeleteSong, cloudFetchSongs, cloudSaveSong, isCloudEnabled } from './cloud.js';
 import { useState, useEffect, useRef, useCallback } from "react";
+
+const CLOUD_ON = isCloudEnabled();
 
 // ─── Constants ────────────────────────────────────────────────
 const SECTION_TYPES = [
@@ -21,24 +24,160 @@ const QUALITIES = [
 let _idN = 0;
 function uid() { return `id${Date.now()}${++_idN}`; }
 
+// Canonical song-flow rank — preserves the user's insertion order within a type.
+const SECTION_RANK = Object.fromEntries(
+  ["Intro","Verse","Pre-Chorus","Chorus","Refrain","Post-Chorus",
+   "Bridge","Breakdown","Instrumental","Solo","Interlude",
+   "Build-Up","Drop","Outro","Coda","Tag"].map((t, i) => [t, i])
+);
+function sortSections(sections) {
+  // Array.prototype.sort is stable (ES2019+), so equal ranks keep insertion order.
+  return [...sections].sort((a, b) =>
+    (SECTION_RANK[a.type] ?? 999) - (SECTION_RANK[b.type] ?? 999)
+  );
+}
+
 function makeSection(type) {
   return { id: uid(), type, label: "", bars: 4, chords: {} };
 }
 function makeSong() {
   return { title: "", artist: "", key: "C", bpm: 120, timeSig: "4/4" };
 }
+function makeSongRecord(meta) {
+  const now = Date.now();
+  const m = meta || {};
+  return {
+    id: uid(),
+    title: m.title || "",
+    artist: m.artist || "",
+    key: m.key || "C",
+    bpm: m.bpm ?? 120,
+    timeSig: m.timeSig || "4/4",
+    sections: [makeSection("Intro")],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function timeAgo(ts) {
+  if (!ts) return "";
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
 
 // ─── Persistence (localStorage) ───────────────────────────────
-const LS_KEY = "chordsheet_v1";
+// v2 shape: { songs: SongRecord[], currentSongId: string|null }
+// v1 shape (legacy): { song, sections }  — migrated on first load.
+const LS_V1 = "chordsheet_v1";
+const LS_V2 = "chordsheet_v2";
 function loadData() {
   try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (raw) return JSON.parse(raw);
+    const raw = localStorage.getItem(LS_V2);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.songs)) return parsed;
+    }
   } catch {}
-  return null;
+  // Migrate from v1 single-song shape
+  try {
+    const rawV1 = localStorage.getItem(LS_V1);
+    if (rawV1) {
+      const old = JSON.parse(rawV1);
+      if (old?.song?.title) {
+        const now = Date.now();
+        const migrated = {
+          id: uid(),
+          title: old.song.title,
+          artist: old.song.artist || "",
+          key: old.song.key || "C",
+          bpm: old.song.bpm ?? 120,
+          timeSig: old.song.timeSig || "4/4",
+          sections: Array.isArray(old.sections) && old.sections.length
+            ? old.sections
+            : [makeSection("Intro")],
+          createdAt: now,
+          updatedAt: now,
+        };
+        return { songs: [migrated], currentSongId: null };
+      }
+    }
+  } catch {}
+  return { songs: [], currentSongId: null };
 }
 function saveData(data) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch {}
+  try { localStorage.setItem(LS_V2, JSON.stringify(data)); } catch {}
+}
+
+// ─────────────────────────────────────────────────────────────
+// Chord parsing & autocomplete namespace
+// ─────────────────────────────────────────────────────────────
+// Roots sorted longest-first so "C#" wins over "C" during prefix-matching.
+const ROOTS_BY_LEN = [...ROOTS].sort((a, b) => b.length - a.length);
+// Quality VALUES (not labels) sorted longest-first so "maj7" wins over "maj".
+const QUAL_VALS_BY_LEN = QUALITIES.map((q) => q.v).filter((v) => v.length > 0).sort((a, b) => b.length - a.length);
+
+function parseChord(text) {
+  if (!text) return null;
+  let s = text.trim();
+  if (!s) return null;
+  // Auto-capitalize first letter so "cm7" → "Cm7"
+  if (/^[a-g]/.test(s)) s = s[0].toUpperCase() + s.slice(1);
+  let root = null;
+  for (const r of ROOTS_BY_LEN) {
+    if (s.startsWith(r)) { root = r; s = s.slice(r.length); break; }
+  }
+  if (!root) return null;
+  let qual = "";
+  for (const q of QUAL_VALS_BY_LEN) {
+    if (s.startsWith(q)) { qual = q; s = s.slice(q.length); break; }
+  }
+  let bass = "";
+  if (s.startsWith("/")) {
+    s = s.slice(1);
+    if (/^[a-g]/.test(s)) s = s[0].toUpperCase() + s.slice(1);
+    for (const r of ROOTS_BY_LEN) {
+      if (s.startsWith(r)) { bass = r; s = s.slice(r.length); break; }
+    }
+    if (!bass) return null;
+  }
+  if (s.length > 0) return null; // trailing garbage
+  return { root, qual, bass };
+}
+
+// Full chord namespace (~2,500 strings), generated once.
+const ALL_CHORDS = (() => {
+  const out = [];
+  for (const r of ROOTS) {
+    for (const q of QUALITIES) {
+      out.push(r + q.v);
+      for (const b of ROOTS) {
+        if (b !== r) out.push(r + q.v + "/" + b);
+      }
+    }
+  }
+  return out;
+})();
+
+function getChordSuggestions(text, limit = 8) {
+  const t = (text || "").trim();
+  if (!t) return [];
+  // Case-insensitive prefix; preserve exact-case match in the list.
+  const tl = t.toLowerCase();
+  const out = [];
+  for (const c of ALL_CHORDS) {
+    if (c.toLowerCase().startsWith(tl) && c !== t) {
+      out.push(c);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -50,7 +189,41 @@ function ChordPicker({ sectionId, barIdx, beatIdx, sections, onSet, onClose }) {
   const [root, setRoot] = useState(existing?.root || "C");
   const [qual, setQual] = useState(existing?.qual ?? "");
   const [bass, setBass] = useState(existing?.bass || "");
+  const [text, setText] = useState(chordStr(existing) || (existing ? "" : "C"));
+  const [showSuggest, setShowSuggest] = useState(false);
+  const [activeSuggest, setActiveSuggest] = useState(0);
   const ref = useRef();
+  const inputRef = useRef();
+
+  const suggestions = showSuggest ? getChordSuggestions(text) : [];
+
+  const commitTyped = (raw) => {
+    setText(raw);
+    const parsed = parseChord(raw);
+    if (parsed) {
+      setRoot(parsed.root);
+      setQual(parsed.qual);
+      setBass(parsed.bass);
+    }
+    setActiveSuggest(0);
+  };
+
+  const pickFromButton = (next) => {
+    const nr = next.root ?? root;
+    const nq = next.qual ?? qual;
+    const nb = next.bass ?? bass;
+    if (next.root !== undefined) setRoot(nr);
+    if (next.qual !== undefined) setQual(nq);
+    if (next.bass !== undefined) setBass(nb);
+    setText(chordStr({ root: nr, qual: nq, bass: nb }) || "");
+    setShowSuggest(false);
+  };
+
+  const applySuggestion = (s) => {
+    commitTyped(s);
+    setShowSuggest(false);
+    inputRef.current?.focus();
+  };
 
   useEffect(() => {
     const h = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
@@ -118,12 +291,73 @@ function ChordPicker({ sectionId, barIdx, beatIdx, sections, onSet, onClose }) {
           </div>
         </div>
 
+        {/* Typed input with autocomplete */}
+        <div style={{ position: "relative" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Type</div>
+          <input
+            ref={inputRef}
+            value={text}
+            onChange={(e) => { commitTyped(e.target.value); setShowSuggest(true); }}
+            onFocus={() => setShowSuggest(true)}
+            onBlur={() => setTimeout(() => setShowSuggest(false), 120)}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown" && suggestions.length) {
+                e.preventDefault();
+                setActiveSuggest((i) => Math.min(suggestions.length - 1, i + 1));
+              } else if (e.key === "ArrowUp" && suggestions.length) {
+                e.preventDefault();
+                setActiveSuggest((i) => Math.max(0, i - 1));
+              } else if (e.key === "Enter") {
+                e.preventDefault();
+                if (showSuggest && suggestions[activeSuggest]) {
+                  applySuggestion(suggestions[activeSuggest]);
+                } else if (parseChord(text)) {
+                  onSet(parseChord(text));
+                }
+              } else if (e.key === "Escape" && showSuggest) {
+                e.preventDefault();
+                setShowSuggest(false);
+              }
+            }}
+            placeholder="e.g. Cmaj7, Am, Dm7/F"
+            style={{
+              width: "100%", padding: "8px 10px", borderRadius: 8,
+              border: parseChord(text) || !text ? "1px solid var(--color-border-strong)" : "1px solid var(--color-danger-border)",
+              background: "var(--color-surface)", color: "var(--color-text)",
+              fontSize: 14, fontFamily: "var(--font-serif)", outline: "none",
+            }}
+          />
+          {showSuggest && suggestions.length > 0 && (
+            <div style={{
+              position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
+              background: "var(--color-surface)",
+              border: "1px solid var(--color-border-strong)",
+              borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.15)",
+              zIndex: 10, maxHeight: 220, overflowY: "auto",
+            }}>
+              {suggestions.map((s, i) => (
+                <div
+                  key={s}
+                  onMouseDown={(e) => { e.preventDefault(); applySuggestion(s); }}
+                  onMouseEnter={() => setActiveSuggest(i)}
+                  style={{
+                    padding: "6px 10px", cursor: "pointer",
+                    fontSize: 13, fontFamily: "var(--font-serif)",
+                    background: i === activeSuggest ? "var(--color-surface-2)" : "transparent",
+                    color: "var(--color-text)",
+                  }}
+                >{s}</div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Root */}
         <div>
           <div style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Root</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 4 }}>
             {ROOTS.map((r) => (
-              <button key={r} onClick={() => setRoot(r)} style={btn(root === r)}>{r}</button>
+              <button key={r} onClick={() => pickFromButton({ root: r })} style={btn(root === r)}>{r}</button>
             ))}
           </div>
         </div>
@@ -133,7 +367,7 @@ function ChordPicker({ sectionId, barIdx, beatIdx, sections, onSet, onClose }) {
           <div style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Quality</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 4 }}>
             {QUALITIES.map((q) => (
-              <button key={q.v} onClick={() => setQual(q.v)} style={btn(qual === q.v)}>{q.l}</button>
+              <button key={q.v} onClick={() => pickFromButton({ qual: q.v })} style={btn(qual === q.v)}>{q.l}</button>
             ))}
           </div>
         </div>
@@ -142,9 +376,9 @@ function ChordPicker({ sectionId, barIdx, beatIdx, sections, onSet, onClose }) {
         <div>
           <div style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Bass note (slash chord)</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 4 }}>
-            <button onClick={() => setBass("")} style={btn(bass === "")}>none</button>
+            <button onClick={() => pickFromButton({ bass: "" })} style={btn(bass === "")}>none</button>
             {ROOTS.map((r) => (
-              <button key={r} onClick={() => setBass(r)} style={btn(bass === r)}>{r}</button>
+              <button key={r} onClick={() => pickFromButton({ bass: r })} style={btn(bass === r)}>{r}</button>
             ))}
           </div>
         </div>
@@ -368,7 +602,7 @@ function AddSectionMenu({ onAdd }) {
           border: "1px solid var(--color-border-strong)",
           background: "var(--color-surface)", color: "var(--color-text)",
           fontSize: 13, fontWeight: 500, cursor: "pointer",
-          display: "flex", alignItems: "center", gap: 6,
+          display: "flex", alignItems: "center", gap: 6, minHeight: 34,
         }}
       >
         <span style={{ fontSize: 16, lineHeight: 1, fontWeight: 300 }}>+</span> Add section
@@ -401,9 +635,13 @@ function AddSectionMenu({ onAdd }) {
 // ─────────────────────────────────────────────────────────────
 // Setup Screen
 // ─────────────────────────────────────────────────────────────
-function SetupScreen({ song, onDone }) {
+function SetupScreen({ song, isEditing, onDone, onCancel }) {
   const [s, setS] = useState(song);
   const upd = (k, v) => setS((p) => ({ ...p, [k]: v }));
+  const submit = () => {
+    const bpm = s.bpm === "" || s.bpm == null ? 120 : s.bpm;
+    onDone({ ...s, bpm });
+  };
   const canSubmit = s.title.trim().length > 0;
 
   const field = {
@@ -429,9 +667,9 @@ function SetupScreen({ song, onDone }) {
           <h1 style={{
             fontSize: 26, fontWeight: 700, margin: 0,
             fontFamily: "var(--font-serif)", color: "var(--color-text)",
-          }}>ChordSheet</h1>
+          }}>{isEditing ? "Edit song" : "New song"}</h1>
           <p style={{ fontSize: 14, color: "var(--color-text-2)", margin: "6px 0 0" }}>
-            Build and organize your song charts
+            {isEditing ? "Update song details" : "Build and organize your song charts"}
           </p>
         </div>
 
@@ -441,7 +679,7 @@ function SetupScreen({ song, onDone }) {
             <input
               value={s.title}
               onChange={(e) => upd("title", e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) onDone(s); }}
+              onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) submit(); }}
               placeholder="e.g. Bohemian Rhapsody"
               autoFocus
               style={field}
@@ -459,7 +697,17 @@ function SetupScreen({ song, onDone }) {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
             {[
               { label: "Key", el: <select value={s.key} onChange={(e) => upd("key", e.target.value)} style={field}>{ROOTS.map((r) => <option key={r}>{r}</option>)}</select> },
-              { label: "BPM", el: <input type="number" value={s.bpm} min={20} max={300} onChange={(e) => upd("bpm", Math.max(20, Math.min(300, +e.target.value || 120)))} style={field} /> },
+              { label: "BPM", el: <input
+                  type="text"
+                  inputMode="numeric"
+                  value={s.bpm}
+                  onChange={(e) => {
+                    const v = e.target.value.replace(/\D/g, "");
+                    upd("bpm", v === "" ? "" : parseInt(v, 10));
+                  }}
+                  onBlur={(e) => { if (e.target.value === "") upd("bpm", 120); }}
+                  style={field}
+                /> },
               { label: "Time sig.", el: <select value={s.timeSig} onChange={(e) => upd("timeSig", e.target.value)} style={field}>{TIME_SIGS.map((t) => <option key={t}>{t}</option>)}</select> },
             ].map(({ label, el }) => (
               <div key={label}>
@@ -469,18 +717,31 @@ function SetupScreen({ song, onDone }) {
             ))}
           </div>
 
-          <button
-            onClick={() => canSubmit && onDone(s)}
-            disabled={!canSubmit}
-            style={{
-              marginTop: 6, padding: "11px", borderRadius: 10, border: "none",
-              background: canSubmit ? "var(--color-accent)" : "var(--color-border)",
-              color: canSubmit ? "var(--color-bg)" : "var(--color-text-3)",
-              fontSize: 15, fontWeight: 600,
-              cursor: canSubmit ? "pointer" : "not-allowed",
-              transition: "background 0.2s",
-            }}
-          >Start editing →</button>
+          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+            {onCancel && (
+              <button
+                onClick={onCancel}
+                style={{
+                  flex: 1, padding: "11px", borderRadius: 10,
+                  border: "1px solid var(--color-border-strong)",
+                  background: "transparent", color: "var(--color-text-2)",
+                  fontSize: 14, cursor: "pointer",
+                }}
+              >Cancel</button>
+            )}
+            <button
+              onClick={() => canSubmit && submit()}
+              disabled={!canSubmit}
+              style={{
+                flex: 2, padding: "11px", borderRadius: 10, border: "none",
+                background: canSubmit ? "var(--color-accent)" : "var(--color-border)",
+                color: canSubmit ? "var(--color-bg)" : "var(--color-text-3)",
+                fontSize: 15, fontWeight: 600,
+                cursor: canSubmit ? "pointer" : "not-allowed",
+                transition: "background 0.2s",
+              }}
+            >{isEditing ? "Save →" : "Start editing →"}</button>
+          </div>
         </div>
       </div>
     </div>
@@ -488,11 +749,241 @@ function SetupScreen({ song, onDone }) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Library Screen
+// ─────────────────────────────────────────────────────────────
+const cardIconBtn = {
+  width: 26, height: 26, borderRadius: 5,
+  border: "1px solid var(--color-border)",
+  background: "transparent", color: "var(--color-text-2)",
+  fontSize: 14, cursor: "pointer", lineHeight: 1,
+  display: "flex", alignItems: "center", justifyContent: "center",
+};
+
+function LibraryScreen({ songs, onOpen, onNew, onDuplicate, onDelete, onPullFromCloud, cloudStatus }) {
+  const [q, setQ] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const ql = q.trim().toLowerCase();
+  const filtered = !ql
+    ? songs
+    : songs.filter(s =>
+        (s.title || "").toLowerCase().includes(ql) ||
+        (s.artist || "").toLowerCase().includes(ql));
+  const sorted = [...filtered].sort(
+    (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)
+  );
+
+  return (
+    <div style={{ maxWidth: 960, margin: "0 auto", padding: "2rem 1rem 5rem" }}>
+      <div style={{
+        display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+        flexWrap: "wrap", gap: 14, marginBottom: "1.5rem",
+      }}>
+        <div>
+          <h1 style={{
+            margin: 0, fontSize: 28, fontWeight: 700,
+            fontFamily: "var(--font-serif)", color: "var(--color-text)",
+          }}>♪ ChordSheet</h1>
+          <p style={{ margin: "4px 0 0", fontSize: 14, color: "var(--color-text-2)" }}>
+            {songs.length === 0
+              ? "Your library is empty"
+              : `${songs.length} song${songs.length === 1 ? "" : "s"}`}
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {songs.length > 0 && (
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search title or artist…"
+              style={{
+                padding: "7px 12px", borderRadius: 8,
+                border: "1px solid var(--color-border-strong)",
+                background: "var(--color-surface)", color: "var(--color-text)",
+                fontSize: 13, outline: "none", width: 220, minHeight: 34,
+              }}
+            />
+          )}
+          {onPullFromCloud && (
+            <button
+              onClick={onPullFromCloud}
+              disabled={cloudStatus?.saving}
+              title="Pull songs from the cloud (merges with local)"
+              style={{
+                padding: "7px 14px", borderRadius: 8,
+                border: "1px solid var(--color-border-strong)",
+                background: "var(--color-surface)", color: "var(--color-text)",
+                fontSize: 13, fontWeight: 500, cursor: cloudStatus?.saving ? "wait" : "pointer",
+                display: "inline-flex", alignItems: "center", gap: 6, minHeight: 34,
+                opacity: cloudStatus?.saving ? 0.7 : 1,
+              }}
+            >☁ {cloudStatus?.saving ? "Syncing…" : "Pull from cloud"}</button>
+          )}
+          <button
+            onClick={onNew}
+            style={{
+              padding: "7px 14px", borderRadius: 8, border: "none",
+              background: "var(--color-accent)", color: "var(--color-bg)",
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", gap: 6, minHeight: 34,
+            }}
+          >
+            <span style={{ fontSize: 16, lineHeight: 1, fontWeight: 300 }}>+</span> New song
+          </button>
+        </div>
+      </div>
+      {cloudStatus?.error && (
+        <div style={{
+          marginBottom: "1rem", padding: "8px 14px", borderRadius: 8,
+          background: "var(--color-danger-bg)",
+          border: "1px solid var(--color-danger-border)",
+          fontSize: 12, color: "var(--color-danger-text)",
+        }}>Cloud sync failed: {cloudStatus.error}</div>
+      )}
+
+      {songs.length === 0 ? (
+        <div style={{
+          textAlign: "center", padding: "4rem 2rem",
+          color: "var(--color-text-3)",
+          border: "2px dashed var(--color-border)",
+          borderRadius: 14,
+        }}>
+          <div style={{ fontSize: 48, marginBottom: 14 }}>♩</div>
+          <p style={{ margin: 0, fontSize: 16 }}>No songs yet.</p>
+          <p style={{ margin: "6px 0 0", fontSize: 13, opacity: 0.7 }}>
+            Click <strong>+ New song</strong> to start your first chart.
+          </p>
+        </div>
+      ) : sorted.length === 0 ? (
+        <p style={{ color: "var(--color-text-3)", textAlign: "center", padding: "2rem", fontSize: 13 }}>
+          No songs match &quot;{q}&quot;.
+        </p>
+      ) : (
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+          gap: 12,
+        }}>
+          {sorted.map((s) => (
+            <div
+              key={s.id}
+              onClick={() => onOpen(s.id)}
+              style={{
+                background: "var(--color-surface)",
+                border: "1px solid var(--color-border)",
+                borderRadius: 10, padding: "14px 16px",
+                display: "flex", flexDirection: "column", gap: 8,
+                cursor: "pointer", transition: "border-color 0.15s",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--color-border-strong)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--color-border)"; }}
+            >
+              <div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                  <div style={{
+                    flex: 1,
+                    fontSize: 17, fontWeight: 700, fontFamily: "var(--font-serif)",
+                    color: "var(--color-text)", lineHeight: 1.2,
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  }}>{s.title || "Untitled"}</div>
+                  {s.cloudSyncedAt && (
+                    <span
+                      title={`Synced ${timeAgo(s.cloudSyncedAt)}`}
+                      style={{ fontSize: 11, color: "var(--color-text-3)", flexShrink: 0 }}
+                    >☁</span>
+                  )}
+                </div>
+                {s.artist && (
+                  <div style={{
+                    fontSize: 13, color: "var(--color-text-2)", marginTop: 2,
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  }}>{s.artist}</div>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {[["Key", s.key], ["BPM", s.bpm], ["Time", s.timeSig]].map(([l, v]) => (
+                  <span key={l} style={{
+                    fontSize: 11, color: "var(--color-text-2)",
+                    background: "var(--color-surface-2)", borderRadius: 5,
+                    padding: "2px 7px", border: "1px solid var(--color-border)",
+                  }}>
+                    <span style={{ opacity: 0.65 }}>{l}: </span>
+                    <span style={{ fontWeight: 600 }}>{v}</span>
+                  </span>
+                ))}
+              </div>
+              <div style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                marginTop: 4, gap: 8,
+              }}>
+                <span style={{ fontSize: 11, color: "var(--color-text-3)" }}>
+                  Updated {timeAgo(s.updatedAt || s.createdAt)}
+                </span>
+                <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>
+                  <button title="Duplicate" onClick={() => onDuplicate(s.id)} style={cardIconBtn}>⧉</button>
+                  <button title="Delete" onClick={() => setConfirmDelete(s.id)} style={cardIconBtn}>×</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div
+          style={{
+            position: "fixed", inset: 0, zIndex: 1000,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: "rgba(0,0,0,0.4)",
+          }}
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setConfirmDelete(null); }}
+        >
+          <div style={{
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border-strong)",
+            borderRadius: 12, padding: "1.5rem", width: 360,
+            boxShadow: "0 16px 48px rgba(0,0,0,0.2)",
+          }}>
+            <p style={{ margin: "0 0 1rem", fontSize: 14, color: "var(--color-text)" }}>
+              Delete this song? This can&apos;t be undone.
+            </p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setConfirmDelete(null)}
+                style={{
+                  padding: "7px 14px", borderRadius: 8,
+                  border: "1px solid var(--color-border-strong)",
+                  background: "transparent", color: "var(--color-text-2)",
+                  fontSize: 13, cursor: "pointer",
+                }}
+              >Cancel</button>
+              <button
+                onClick={() => { onDelete(confirmDelete); setConfirmDelete(null); }}
+                style={{
+                  padding: "7px 14px", borderRadius: 8, border: "none",
+                  background: "var(--color-danger-text)", color: "#fff",
+                  fontSize: 13, fontWeight: 600, cursor: "pointer",
+                }}
+              >Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Editor Screen
 // ─────────────────────────────────────────────────────────────
-function EditorScreen({ song, sections, addSection, removeSection, duplicateSection, updateSection, openPicker, onBackToSetup, onNewSong }) {
-  const [confirmClear, setConfirmClear] = useState(false);
-
+function EditorScreen({ song, sections, addSection, removeSection, duplicateSection, updateSection, openPicker, onTranspose, onBackToSetup, onBackToLibrary, onSaveToCloud, cloudStatus }) {
+  const transposeBtn = {
+    width: 22, height: 22, borderRadius: 4,
+    border: "1px solid var(--color-border)",
+    background: "var(--color-surface)", color: "var(--color-text-2)",
+    fontSize: 13, cursor: "pointer", lineHeight: 1,
+    display: "flex", alignItems: "center", justifyContent: "center",
+  };
   return (
     <div className="editor-screen" style={{ maxWidth: 960, margin: "0 auto", padding: "1.5rem 1rem 5rem" }}>
       {/* ── Page header ── */}
@@ -509,7 +1000,28 @@ function EditorScreen({ song, sections, addSection, removeSection, duplicateSect
             <p style={{ margin: "4px 0 0", fontSize: 14, color: "var(--color-text-2)" }}>{song.artist}</p>
           )}
           <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
-            {[{ l: "Key", v: song.key }, { l: "BPM", v: song.bpm }, { l: "Time", v: song.timeSig }].map(({ l, v }) => (
+            <span style={{
+              fontSize: 12, color: "var(--color-text-2)",
+              background: "var(--color-surface-2)", borderRadius: 6,
+              padding: "3px 4px 3px 9px", border: "1px solid var(--color-border)",
+              display: "inline-flex", alignItems: "center", gap: 6,
+            }}>
+              <span style={{ opacity: 0.65 }}>Key:</span>
+              <button
+                className="no-print"
+                title="Transpose down a semitone"
+                onClick={() => onTranspose(-1)}
+                style={transposeBtn}
+              >−</button>
+              <span style={{ fontWeight: 600, minWidth: 18, textAlign: "center" }}>{song.key}</span>
+              <button
+                className="no-print"
+                title="Transpose up a semitone"
+                onClick={() => onTranspose(+1)}
+                style={transposeBtn}
+              >+</button>
+            </span>
+            {[{ l: "BPM", v: song.bpm }, { l: "Time", v: song.timeSig }].map(({ l, v }) => (
               <span key={l} style={{
                 fontSize: 12, color: "var(--color-text-2)",
                 background: "var(--color-surface-2)", borderRadius: 6,
@@ -527,6 +1039,16 @@ function EditorScreen({ song, sections, addSection, removeSection, duplicateSect
         </div>
 
         <div className="no-print" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={onBackToLibrary}
+            style={{
+              padding: "7px 14px", borderRadius: 8,
+              border: "1px solid var(--color-border-strong)",
+              background: "var(--color-surface)", color: "var(--color-text)",
+              fontSize: 13, fontWeight: 500, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", gap: 4, minHeight: 34,
+            }}
+          >← Library</button>
           <AddSectionMenu onAdd={addSection} />
           <button
             onClick={() => window.print()}
@@ -535,40 +1057,34 @@ function EditorScreen({ song, sections, addSection, removeSection, duplicateSect
               border: "1px solid var(--color-border-strong)",
               background: "var(--color-surface)", color: "var(--color-text)",
               fontSize: 13, fontWeight: 500, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", minHeight: 34,
             }}
           >⬇ Print / PDF</button>
-          <button
-            onClick={() => setConfirmClear(true)}
-            style={{
-              padding: "7px 12px", borderRadius: 8,
-              border: "1px solid var(--color-border)",
-              background: "transparent", color: "var(--color-text-3)",
-              fontSize: 12, cursor: "pointer",
-            }}
-          >New song</button>
+          {onSaveToCloud && (
+            <button
+              onClick={onSaveToCloud}
+              disabled={cloudStatus?.saving}
+              title={song.cloudSyncedAt ? `Last synced ${timeAgo(song.cloudSyncedAt)}` : "Save this song to the cloud"}
+              style={{
+                padding: "7px 14px", borderRadius: 8,
+                border: "1px solid var(--color-border-strong)",
+                background: song.cloudSyncedAt ? "var(--color-surface-2)" : "var(--color-surface)",
+                color: "var(--color-text)",
+                fontSize: 13, fontWeight: 500, cursor: cloudStatus?.saving ? "wait" : "pointer",
+                display: "inline-flex", alignItems: "center", gap: 6, minHeight: 34,
+                opacity: cloudStatus?.saving ? 0.7 : 1,
+              }}
+            >☁ {cloudStatus?.saving ? "Saving…" : song.cloudSyncedAt ? `Saved ${timeAgo(song.cloudSyncedAt)}` : "Save to cloud"}</button>
+          )}
         </div>
       </div>
-
-      {/* ── Confirm clear ── */}
-      {confirmClear && (
+      {cloudStatus?.error && (
         <div className="no-print" style={{
-          marginBottom: "1rem", padding: "12px 16px", borderRadius: 10,
+          marginBottom: "1rem", padding: "8px 14px", borderRadius: 8,
           background: "var(--color-danger-bg)",
           border: "1px solid var(--color-danger-border)",
-          display: "flex", alignItems: "center", gap: 12,
-        }}>
-          <span style={{ fontSize: 13, color: "var(--color-danger-text)", flex: 1 }}>
-            Start a new song? Your current chart will be cleared.
-          </span>
-          <button
-            onClick={() => { onNewSong(); setConfirmClear(false); }}
-            style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: "var(--color-danger-text)", color: "#fff", fontSize: 12, cursor: "pointer" }}
-          >Yes, clear</button>
-          <button
-            onClick={() => setConfirmClear(false)}
-            style={{ padding: "5px 12px", borderRadius: 6, border: "1px solid var(--color-border-strong)", background: "transparent", color: "var(--color-text-2)", fontSize: 12, cursor: "pointer" }}
-          >Cancel</button>
-        </div>
+          fontSize: 12, color: "var(--color-danger-text)",
+        }}>Cloud save failed: {cloudStatus.error}</div>
       )}
 
       {/* ── Section color legend ── */}
@@ -735,58 +1251,71 @@ function PrintView({ song, sections }) {
 // Root App
 // ─────────────────────────────────────────────────────────────
 export default function App() {
-  const [view, setView] = useState("setup");
-  const [song, setSong] = useState(makeSong);
-  const [sections, setSections] = useState([]);
+  const [view, setView] = useState("library");
+  const [songs, setSongs] = useState([]);
+  const [currentSongId, setCurrentSongId] = useState(null);
   const [ready, setReady] = useState(false);
   const [picker, setPicker] = useState(null);
 
-  // Load from localStorage on mount
+  // Load from localStorage on mount (with v1 → v2 migration)
   useEffect(() => {
     const data = loadData();
-    if (data?.song?.title) {
-      setSong(data.song);
-      setSections(data.sections || []);
-      setView("editor");
-    }
+    const sortedSongs = (data.songs || []).map((s) => ({
+      ...s,
+      sections: sortSections(s.sections || []),
+    }));
+    setSongs(sortedSongs);
     setReady(true);
   }, []);
 
-  // Auto-save whenever song or sections change
+  // Auto-save whenever library changes
   useEffect(() => {
     if (!ready) return;
-    saveData({ song, sections });
-  }, [song, sections, ready]);
+    saveData({ songs, currentSongId });
+  }, [songs, currentSongId, ready]);
 
-  const handleSetupDone = useCallback((s) => {
-    setSong(s);
-    setSections((prev) => (prev.length ? prev : [makeSection("Intro")]));
-    setView("editor");
-  }, []);
+  const currentSong = songs.find((s) => s.id === currentSongId) || null;
 
+  // Patch the current song; bumps updatedAt automatically.
+  const patchCurrent = useCallback((updater) => {
+    setSongs((prev) =>
+      prev.map((s) =>
+        s.id === currentSongId ? { ...updater(s), updatedAt: Date.now() } : s
+      )
+    );
+  }, [currentSongId]);
+
+  // ── Section operations (operate on current song) ──
   const addSection = useCallback((type) => {
-    setSections((prev) => [...prev, makeSection(type)]);
-  }, []);
+    patchCurrent((s) => ({ ...s, sections: sortSections([...s.sections, makeSection(type)]) }));
+  }, [patchCurrent]);
 
   const removeSection = useCallback((id) => {
-    setSections((prev) => prev.filter((s) => s.id !== id));
-  }, []);
+    patchCurrent((s) => ({ ...s, sections: s.sections.filter((sec) => sec.id !== id) }));
+  }, [patchCurrent]);
 
   const duplicateSection = useCallback((id) => {
-    setSections((prev) => {
-      const idx = prev.findIndex((s) => s.id === id);
-      if (idx < 0) return prev;
-      const orig = prev[idx];
+    patchCurrent((s) => {
+      const idx = s.sections.findIndex((sec) => sec.id === id);
+      if (idx < 0) return s;
+      const orig = s.sections[idx];
       const copy = { ...orig, id: uid(), label: (orig.label || orig.type) + " copy", chords: { ...orig.chords } };
-      const next = [...prev];
+      const next = [...s.sections];
       next.splice(idx + 1, 0, copy);
-      return next;
+      return { ...s, sections: sortSections(next) };
     });
-  }, []);
+  }, [patchCurrent]);
 
   const updateSection = useCallback((id, key, val) => {
-    setSections((prev) => prev.map((s) => (s.id === id ? { ...s, [key]: val } : s)));
-  }, []);
+    patchCurrent((s) => ({
+      ...s,
+      sections: s.sections.map((sec) => (sec.id === id ? { ...sec, [key]: val } : sec)),
+    }));
+  }, [patchCurrent]);
+
+  const transpose = useCallback((semitones) => {
+    patchCurrent((s) => transposeSong(s, semitones));
+  }, [patchCurrent]);
 
   const openPicker = useCallback((sectionId, barIdx, beatIdx) => {
     setPicker({ sectionId, barIdx, beatIdx });
@@ -795,23 +1324,116 @@ export default function App() {
   const handleSetChord = useCallback((chord) => {
     if (!picker) return;
     const { sectionId, barIdx, beatIdx } = picker;
-    setSections((prev) =>
-      prev.map((s) => {
-        if (s.id !== sectionId) return s;
+    patchCurrent((s) => ({
+      ...s,
+      sections: s.sections.map((sec) => {
+        if (sec.id !== sectionId) return sec;
         const k = `${barIdx}-${beatIdx}`;
-        const chords = { ...s.chords };
+        const chords = { ...sec.chords };
         if (chord === null) delete chords[k];
         else chords[k] = chord;
-        return { ...s, chords };
-      })
-    );
+        return { ...sec, chords };
+      }),
+    }));
     setPicker(null);
-  }, [picker]);
+  }, [picker, patchCurrent]);
 
-  const handleNewSong = useCallback(() => {
-    setSong(makeSong());
-    setSections([]);
+  // ── Navigation / song-level ops ──
+  const handleSetupDone = useCallback((meta) => {
+    if (currentSongId) {
+      // Editing metadata of an existing song
+      patchCurrent((s) => ({ ...s, ...meta }));
+    } else {
+      // Creating a new song
+      const rec = makeSongRecord(meta);
+      setSongs((prev) => [...prev, rec]);
+      setCurrentSongId(rec.id);
+    }
+    setView("editor");
+  }, [currentSongId, patchCurrent]);
+
+  const openNewSongSetup = useCallback(() => {
+    setCurrentSongId(null);
     setView("setup");
+  }, []);
+
+  const openExistingSong = useCallback((id) => {
+    setCurrentSongId(id);
+    setView("editor");
+  }, []);
+
+  const backToLibrary = useCallback(() => {
+    setCurrentSongId(null);
+    setView("library");
+  }, []);
+
+  const deleteSong = useCallback((id) => {
+    setSongs((prev) => prev.filter((s) => s.id !== id));
+    if (currentSongId === id) {
+      setCurrentSongId(null);
+      setView("library");
+    }
+    if (CLOUD_ON) {
+      // Fire-and-forget cloud delete. RLS ensures we can only delete our own.
+      cloudDeleteSong(id).catch(() => {});
+    }
+  }, [currentSongId]);
+
+  // ── Cloud sync ──
+  const [cloudStatus, setCloudStatus] = useState({ saving: false, error: null });
+
+  const saveCurrentToCloud = useCallback(async () => {
+    if (!CLOUD_ON || !currentSong) return;
+    setCloudStatus({ saving: true, error: null });
+    const res = await cloudSaveSong(currentSong);
+    if (res.ok) {
+      const now = Date.now();
+      setSongs((prev) =>
+        prev.map((s) => (s.id === currentSong.id ? { ...s, cloudSyncedAt: now } : s))
+      );
+      setCloudStatus({ saving: false, error: null });
+    } else {
+      setCloudStatus({ saving: false, error: res.error });
+    }
+  }, [currentSong]);
+
+  const pullFromCloud = useCallback(async () => {
+    if (!CLOUD_ON) return;
+    setCloudStatus({ saving: true, error: null });
+    const res = await cloudFetchSongs();
+    if (!res.ok) { setCloudStatus({ saving: false, error: res.error }); return; }
+    const remote = res.songs;
+    setSongs((prev) => {
+      const byId = new Map(prev.map((s) => [s.id, s]));
+      for (const r of remote) {
+        const local = byId.get(r.id);
+        const remoteSynced = { ...r, sections: sortSections(r.sections || []), cloudSyncedAt: Date.now() };
+        if (!local || (r.updatedAt || 0) > (local.updatedAt || 0)) {
+          byId.set(r.id, remoteSynced);
+        } else {
+          byId.set(r.id, { ...local, cloudSyncedAt: Date.now() });
+        }
+      }
+      return Array.from(byId.values());
+    });
+    setCloudStatus({ saving: false, error: null });
+  }, []);
+
+  const duplicateSong = useCallback((id) => {
+    setSongs((prev) => {
+      const orig = prev.find((s) => s.id === id);
+      if (!orig) return prev;
+      const now = Date.now();
+      const copy = {
+        ...orig,
+        id: uid(),
+        title: (orig.title || "Untitled") + " (copy)",
+        sections: orig.sections.map((sec) => ({ ...sec, id: uid(), chords: { ...sec.chords } })),
+        createdAt: now,
+        updatedAt: now,
+      };
+      return [...prev, copy];
+    });
   }, []);
 
   if (!ready) {
@@ -820,30 +1442,50 @@ export default function App() {
 
   return (
     <>
-      {view === "setup" ? (
-        <SetupScreen song={song} onDone={handleSetupDone} />
-      ) : (
+      {view === "library" && (
+        <LibraryScreen
+          songs={songs}
+          onOpen={openExistingSong}
+          onNew={openNewSongSetup}
+          onDuplicate={duplicateSong}
+          onDelete={deleteSong}
+          onPullFromCloud={CLOUD_ON ? pullFromCloud : null}
+          cloudStatus={cloudStatus}
+        />
+      )}
+      {view === "setup" && (
+        <SetupScreen
+          song={currentSong || makeSong()}
+          isEditing={!!currentSongId}
+          onDone={handleSetupDone}
+          onCancel={currentSongId ? () => setView("editor") : backToLibrary}
+        />
+      )}
+      {view === "editor" && currentSong && (
         <EditorScreen
-          song={song}
-          sections={sections}
+          song={currentSong}
+          sections={currentSong.sections}
           addSection={addSection}
           removeSection={removeSection}
           duplicateSection={duplicateSection}
           updateSection={updateSection}
           openPicker={openPicker}
+          onTranspose={transpose}
           onBackToSetup={() => setView("setup")}
-          onNewSong={handleNewSong}
+          onBackToLibrary={backToLibrary}
+          onSaveToCloud={CLOUD_ON ? saveCurrentToCloud : null}
+          cloudStatus={cloudStatus}
         />
       )}
-      {view === "editor" && (
-        <PrintView song={song} sections={sections} />
+      {view === "editor" && currentSong && (
+        <PrintView song={currentSong} sections={currentSong.sections} />
       )}
-      {picker && (
+      {picker && currentSong && (
         <ChordPicker
           sectionId={picker.sectionId}
           barIdx={picker.barIdx}
           beatIdx={picker.beatIdx}
-          sections={sections}
+          sections={currentSong.sections}
           onSet={handleSetChord}
           onClose={() => setPicker(null)}
         />
