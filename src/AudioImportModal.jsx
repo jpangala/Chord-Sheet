@@ -2,8 +2,10 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   decodeAudioFile, detectTempo, smoothChordSequence, buildDraftSection,
 } from './audioChords.js';
+import { chordStr, beatsPerBar } from './printUtils.js';
 import { SECTION_TYPES } from './chords.js';
 import { uid } from './models.js';
+import { ChordPicker } from './ChordPicker.jsx';
 
 const MAX_ANALYSIS_SECONDS = 300; // cap chroma/chord analysis to the first 5 minutes
 const MIN_CONFIDENCE_FOR_RESULT = 0.35; // below this average, treat as "no clear chords"
@@ -198,11 +200,156 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
         )}
 
         {step === 'preview' && draft && (
-          <div style={{ color: 'var(--color-text-3)', fontSize: 12 }}>
-            Preview UI is added in Task 10.
-          </div>
+          <>
+            {truncated && (
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--color-text-3)' }}>
+                Only the first 5 minutes of this file were analyzed.
+              </p>
+            )}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <label style={{ fontSize: 11, color: 'var(--color-text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                Type
+                <select
+                  value={sectionType}
+                  onChange={(e) => setSectionType(e.target.value)}
+                  style={{
+                    display: 'block', marginTop: 4, padding: '5px 8px', borderRadius: 6,
+                    border: '1px solid var(--color-border-strong)',
+                    background: 'var(--color-surface)', color: 'var(--color-text)', fontSize: 12,
+                  }}
+                >
+                  {SECTION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </label>
+              <label style={{ fontSize: 11, color: 'var(--color-text-3)', textTransform: 'uppercase', letterSpacing: '0.08em', flex: 1 }}>
+                Label
+                <input
+                  value={sectionLabel}
+                  onChange={(e) => setSectionLabel(e.target.value)}
+                  placeholder="optional"
+                  style={{
+                    display: 'block', marginTop: 4, width: '100%', padding: '5px 8px', borderRadius: 6,
+                    border: '1px solid var(--color-border-strong)',
+                    background: 'var(--color-surface)', color: 'var(--color-text)', fontSize: 12,
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </label>
+            </div>
+
+            <PreviewGrid
+              draft={draft}
+              timeSig={song.timeSig}
+              onBeatClick={(barIdx, beatIdx) => setPickerTarget({ barIdx, beatIdx })}
+            />
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--color-text-2)' }}>
+              <input type="checkbox" checked={updateBpm} onChange={(e) => setUpdateBpm(e.target.checked)} />
+              Update song BPM to {detectedBpm} (currently {song.bpm})
+            </label>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={() => setStep('pick')}
+                style={{
+                  flex: 1, padding: '9px', borderRadius: 8,
+                  border: '1px solid var(--color-border-strong)',
+                  background: 'transparent', color: 'var(--color-text-2)',
+                  fontSize: 13, cursor: 'pointer',
+                }}
+              >Start over</button>
+              <button
+                onClick={handleCreate}
+                style={{
+                  flex: 2, padding: '9px', borderRadius: 8, border: 'none',
+                  background: 'var(--color-accent)', color: 'var(--color-bg)',
+                  fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                }}
+              >Create section</button>
+            </div>
+          </>
         )}
       </div>
+
+      {pickerTarget && (
+        <ChordPicker
+          sectionId={draftIdRef.current}
+          barIdx={pickerTarget.barIdx}
+          beatIdx={pickerTarget.beatIdx}
+          sections={[{ id: draftIdRef.current, chords: draft.chords }]}
+          onSet={(chord) => setDraftChord(pickerTarget.barIdx, pickerTarget.beatIdx, chord)}
+          onClose={() => setPickerTarget(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function PreviewGrid({ draft, timeSig, onBeatClick }) {
+  const nb = beatsPerBar(timeSig);
+  const COLS = 4;
+  const rows = [];
+  for (let i = 0; i < draft.bars; i += COLS) {
+    rows.push(Array.from({ length: Math.min(COLS, draft.bars - i) }, (_, j) => i + j));
+  }
+
+  return (
+    <div>
+      {rows.map((rowBars, ri) => (
+        <div
+          key={ri}
+          style={{
+            display: 'grid', gridTemplateColumns: `repeat(${rowBars.length}, 1fr)`,
+            gap: 8, marginBottom: ri < rows.length - 1 ? 8 : 0,
+          }}
+        >
+          {rowBars.map((barIdx) => (
+            <div
+              key={barIdx}
+              style={{
+                border: '1px solid var(--color-border-strong)', borderRadius: 6,
+                overflow: 'hidden', background: 'var(--color-surface)',
+              }}
+            >
+              <div style={{
+                fontSize: 9, color: 'var(--color-text-3)', padding: '2px 5px',
+                borderBottom: '1px solid var(--color-border)', background: 'var(--color-surface-2)',
+              }}>
+                {barIdx + 1}
+              </div>
+              <div style={{ display: 'flex' }}>
+                {Array.from({ length: nb }).map((_, beatIdx) => {
+                  const key = `${barIdx}-${beatIdx}`;
+                  const chord = draft.chords[key] || null;
+                  const confidence = draft.confidence[key];
+                  const label = chordStr(chord);
+                  return (
+                    <div
+                      key={beatIdx}
+                      onClick={() => onBeatClick(barIdx, beatIdx)}
+                      style={{
+                        flex: 1, minHeight: 44,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        cursor: 'pointer',
+                        borderLeft: beatIdx === 0 ? 'none' : '1px dashed var(--color-border)',
+                        opacity: confidence !== undefined ? 0.4 + confidence * 0.6 : 1,
+                      }}
+                    >
+                      {label ? (
+                        <span style={{ fontSize: 13, fontWeight: 700, fontFamily: 'var(--font-serif)', color: 'var(--color-text)' }}>
+                          {label}
+                        </span>
+                      ) : (
+                        <span style={{ color: 'var(--color-border-strong)', fontSize: 16, opacity: 0.6 }}>·</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
