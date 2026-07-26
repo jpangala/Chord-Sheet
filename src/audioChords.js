@@ -64,3 +64,79 @@ export function matchChordTemplates(chroma) {
   }
   return { root: best.root, qual: best.qual, confidence: Math.max(0, bestScore) };
 }
+
+/**
+ * Groups consecutive identical-chord frames into segments, then merges any
+ * segment shorter than `minSegmentSeconds` into its longer neighbor.
+ * @param {{time:number, root:string, qual:string, confidence:number}[]} frames
+ * @param {number} frameDuration seconds represented by one frame
+ * @param {number} [minSegmentSeconds]
+ * @returns {{root:string, qual:string, confidence:number, startTime:number, endTime:number}[]}
+ */
+export function smoothChordSequence(frames, frameDuration, minSegmentSeconds = 0.3) {
+  if (!frames.length) return [];
+
+  // Rounds to nanosecond precision to avoid float-addition drift (e.g. 0.2 + 0.1
+  // === 0.30000000000000004 in JS) while staying far finer than any real audio timing.
+  const roundTime = (t) => Math.round(t * 1e9) / 1e9;
+
+  // Pass 1: group consecutive identical (root, qual) frames into raw segments.
+  const raw = [];
+  let cur = {
+    root: frames[0].root, qual: frames[0].qual,
+    startTime: frames[0].time, endTime: roundTime(frames[0].time + frameDuration),
+    confidences: [frames[0].confidence],
+  };
+  for (let i = 1; i < frames.length; i++) {
+    const f = frames[i];
+    if (f.root === cur.root && f.qual === cur.qual) {
+      cur.endTime = roundTime(f.time + frameDuration);
+      cur.confidences.push(f.confidence);
+    } else {
+      raw.push(cur);
+      cur = {
+        root: f.root, qual: f.qual,
+        startTime: f.time, endTime: roundTime(f.time + frameDuration),
+        confidences: [f.confidence],
+      };
+    }
+  }
+  raw.push(cur);
+
+  // Pass 2: merge segments shorter than minSegmentSeconds into the longer neighbor.
+  const segments = raw;
+  let changed = true;
+  while (changed && segments.length > 1) {
+    changed = false;
+    for (let i = 0; i < segments.length; i++) {
+      const dur = segments[i].endTime - segments[i].startTime;
+      if (dur < minSegmentSeconds) {
+        const prev = segments[i - 1];
+        const next = segments[i + 1];
+        const prevDur = prev ? prev.endTime - prev.startTime : -1;
+        const nextDur = next ? next.endTime - next.startTime : -1;
+        if (prev && prevDur >= nextDur) {
+          prev.endTime = segments[i].endTime;
+          prev.confidences.push(...segments[i].confidences);
+          segments.splice(i, 1);
+        } else if (next) {
+          next.startTime = segments[i].startTime;
+          next.confidences.unshift(...segments[i].confidences);
+          segments.splice(i, 1);
+        } else {
+          continue;
+        }
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  return segments.map((s) => ({
+    root: s.root,
+    qual: s.qual,
+    confidence: s.confidences.reduce((a, b) => a + b, 0) / s.confidences.length,
+    startTime: s.startTime,
+    endTime: s.endTime,
+  }));
+}
