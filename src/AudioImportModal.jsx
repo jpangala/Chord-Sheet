@@ -113,10 +113,16 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
   const setDraftChord = useCallback((barIdx, beatIdx, chord) => {
     setDraft((prev) => {
       const chords = { ...prev.chords };
+      const confidence = { ...prev.confidence };
       const key = `${barIdx}-${beatIdx}`;
-      if (chord === null) delete chords[key];
-      else chords[key] = chord;
-      return { ...prev, chords };
+      if (chord === null) {
+        delete chords[key];
+        delete confidence[key];
+      } else {
+        chords[key] = chord;
+        confidence[key] = 1;
+      }
+      return { ...prev, chords, confidence };
     });
     setPickerTarget(null);
   }, []);
