@@ -4,6 +4,7 @@
 
 import { ROOTS } from './chords.js';
 import { beatsPerBar } from './printUtils.js';
+import { analyze } from 'web-audio-beat-detector';
 
 // Only qualities reliably distinguishable from a 12-bin chroma vector.
 // Values match the `v` field of QUALITIES in chords.js exactly, so
@@ -174,4 +175,28 @@ export function buildDraftSection(segments, bpm, timeSig) {
 
   const bars = Math.max(1, Math.ceil(maxBeat / nb));
   return { bars, chords, confidence };
+}
+
+/**
+ * Decodes an uploaded audio File into an AudioBuffer.
+ * @param {File} file
+ * @returns {Promise<AudioBuffer>}
+ */
+export async function decodeAudioFile(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  try {
+    return await ctx.decodeAudioData(arrayBuffer);
+  } finally {
+    ctx.close();
+  }
+}
+
+/**
+ * Estimates tempo (BPM) from a decoded AudioBuffer.
+ * @param {AudioBuffer} audioBuffer
+ * @returns {Promise<number>}
+ */
+export async function detectTempo(audioBuffer) {
+  return analyze(audioBuffer);
 }
