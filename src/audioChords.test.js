@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { matchChordTemplates } from './audioChords.js'
 import { smoothChordSequence } from './audioChords.js'
+import { buildDraftSection } from './audioChords.js'
 
 describe('matchChordTemplates', () => {
   it('matches a C major chroma vector (C, E, G) to C major with high confidence', () => {
@@ -72,5 +73,36 @@ describe('smoothChordSequence', () => {
     const result = smoothChordSequence(frames, frameDuration, 0.3)
     expect(result).toHaveLength(1)
     expect(result[0].root).toBe('C')
+  })
+})
+
+describe('buildDraftSection', () => {
+  const timeSig = '4/4'
+
+  it('returns a default empty 4-bar section for no segments', () => {
+    expect(buildDraftSection([], 120, timeSig)).toEqual({ bars: 4, chords: {}, confidence: {} })
+  })
+
+  it('places a chord at the beat where each segment starts, at 120 BPM / 4-4', () => {
+    // 120 BPM -> 0.5s per beat -> 2s per bar
+    const segments = [
+      { root: 'C', qual: '', confidence: 0.9, startTime: 0.0, endTime: 2.0 }, // beat 0 -> bar 0 beat 0
+      { root: 'G', qual: '', confidence: 0.8, startTime: 2.0, endTime: 4.0 }, // beat 4 -> bar 1 beat 0
+    ]
+    const result = buildDraftSection(segments, 120, timeSig)
+    expect(result.chords['0-0']).toEqual({ root: 'C', qual: '', bass: '' })
+    expect(result.chords['1-0']).toEqual({ root: 'G', qual: '', bass: '' })
+    expect(result.confidence['0-0']).toBeCloseTo(0.9)
+    expect(result.confidence['1-0']).toBeCloseTo(0.8)
+    expect(result.bars).toBe(2)
+  })
+
+  it('rounds the bar count up to cover a partial final bar', () => {
+    // 120 BPM, one segment lasting 3 beats (1.5s) inside a single 4/4 bar
+    const segments = [
+      { root: 'C', qual: '', confidence: 0.9, startTime: 0.0, endTime: 1.5 },
+    ]
+    const result = buildDraftSection(segments, 120, timeSig)
+    expect(result.bars).toBe(1)
   })
 })

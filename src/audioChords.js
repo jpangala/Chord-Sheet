@@ -140,3 +140,38 @@ export function smoothChordSequence(frames, frameDuration, minSegmentSeconds = 0
     endTime: s.endTime,
   }));
 }
+
+/**
+ * Lays out time-based chord segments onto a bar/beat grid.
+ * @param {{root:string, qual:string, confidence:number, startTime:number, endTime:number}[]} segments
+ * @param {number} bpm
+ * @param {string} timeSig e.g. "4/4"
+ * @returns {{ bars: number, chords: Object, confidence: Object }}
+ */
+export function buildDraftSection(segments, bpm, timeSig) {
+  const nb = beatsPerBar(timeSig);
+  const secondsPerBeat = 60 / bpm;
+
+  if (!segments.length) {
+    return { bars: 4, chords: {}, confidence: {} };
+  }
+
+  const chords = {};
+  const confidence = {};
+  let maxBeat = 0;
+
+  for (const seg of segments) {
+    const startBeat = Math.round(seg.startTime / secondsPerBeat);
+    const bar = Math.floor(startBeat / nb);
+    const beatInBar = startBeat % nb;
+    const key = `${bar}-${beatInBar}`;
+    chords[key] = { root: seg.root, qual: seg.qual, bass: '' };
+    confidence[key] = seg.confidence;
+
+    const endBeat = Math.max(startBeat + 1, Math.round(seg.endTime / secondsPerBeat));
+    if (endBeat > maxBeat) maxBeat = endBeat;
+  }
+
+  const bars = Math.max(1, Math.ceil(maxBeat / nb));
+  return { bars, chords, confidence };
+}
