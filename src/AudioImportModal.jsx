@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   decodeAudioFile, detectTempo, smoothChordSequence, buildDraftSection,
 } from './audioChords.js';
@@ -20,6 +20,7 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
   const [pickerTarget, setPickerTarget] = useState(null); // { barIdx, beatIdx }
   const workerRef = useRef(null);
   const draftIdRef = useRef(uid());
+  const requestIdRef = useRef(0);
 
   const runWorkerAnalysis = useCallback((channelData, sampleRate) => {
     return new Promise((resolve, reject) => {
@@ -41,6 +42,7 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
   }, []);
 
   const handleFile = useCallback(async (file) => {
+    const requestId = ++requestIdRef.current;
     setStep('decoding');
     setErrorMessage('');
 
@@ -48,10 +50,12 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
     try {
       audioBuffer = await decodeAudioFile(file);
     } catch {
+      if (requestId !== requestIdRef.current) return;
       setErrorMessage("Couldn't read this audio file.");
       setStep('error');
       return;
     }
+    if (requestId !== requestIdRef.current) return;
 
     setStep('analyzing');
     const cappedLength = Math.min(audioBuffer.length, MAX_ANALYSIS_SECONDS * audioBuffer.sampleRate);
@@ -65,6 +69,7 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
         detectTempo(audioBuffer),
         runWorkerAnalysis(channelData, audioBuffer.sampleRate),
       ]);
+      if (requestId !== requestIdRef.current) return;
 
       const frameDuration = frames.length > 1 ? frames[1].time - frames[0].time : 0.1;
       const segments = smoothChordSequence(frames, frameDuration);
@@ -84,16 +89,23 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
       setUpdateBpm(song.bpm === 120 || Math.abs(song.bpm - bpmRounded) > 5);
       setDraft(built);
       setStep('preview');
-    } catch {
-      setErrorMessage('Analysis failed. Try a different file.');
+    } catch (err) {
+      if (requestId !== requestIdRef.current) return;
+      setErrorMessage(err?.message ? `Analysis failed: ${err.message}` : 'Analysis failed. Try a different file.');
       setStep('error');
     }
   }, [song.timeSig, song.bpm, runWorkerAnalysis]);
 
   const handleCancel = useCallback(() => {
+    requestIdRef.current++;
     workerRef.current?.terminate();
     workerRef.current = null;
     setStep('pick');
+  }, []);
+
+  useEffect(() => () => {
+    requestIdRef.current++;
+    workerRef.current?.terminate();
   }, []);
 
   const setDraftChord = useCallback((barIdx, beatIdx, chord) => {
