@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { uid, sortSections, makeSection, makeSong, makeSongRecord, timeAgo, loadData, saveData } from './models.js';
 import { SECTION_TYPES, TIME_SIGS, ROOTS, QUALITIES, ROOTS_BY_LEN, QUAL_VALS_BY_LEN, parseChord, ALL_CHORDS, getChordSuggestions } from './chords.js';
 import { ChordPicker } from './ChordPicker.jsx';
+import { AudioImportModal } from './AudioImportModal.jsx';
 
 const CLOUD_ON = isCloudEnabled();
 
@@ -575,7 +576,7 @@ function LibraryScreen({ songs, onOpen, onNew, onDuplicate, onDelete, onPullFrom
 // ─────────────────────────────────────────────────────────────
 // Editor Screen
 // ─────────────────────────────────────────────────────────────
-function EditorScreen({ song, sections, addSection, removeSection, duplicateSection, updateSection, openPicker, onTranspose, onBackToSetup, onBackToLibrary, onSaveToCloud, cloudStatus }) {
+function EditorScreen({ song, sections, addSection, removeSection, duplicateSection, updateSection, openPicker, onTranspose, onBackToSetup, onBackToLibrary, onSaveToCloud, cloudStatus, onOpenAudioImport }) {
   const transposeBtn = {
     width: 22, height: 22, borderRadius: 4,
     border: "1px solid var(--color-border)",
@@ -649,6 +650,16 @@ function EditorScreen({ song, sections, addSection, removeSection, duplicateSect
             }}
           >← Library</button>
           <AddSectionMenu onAdd={addSection} />
+          <button
+            onClick={onOpenAudioImport}
+            style={{
+              padding: "7px 14px", borderRadius: 8,
+              border: "1px solid var(--color-border-strong)",
+              background: "var(--color-surface)", color: "var(--color-text)",
+              fontSize: 13, fontWeight: 500, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", minHeight: 34,
+            }}
+          >🎧 Import from Audio</button>
           <button
             onClick={() => window.print()}
             style={{
@@ -912,6 +923,24 @@ export default function App() {
     }));
   }, [patchCurrent]);
 
+  const [audioImportOpen, setAudioImportOpen] = useState(false);
+
+  const addSectionFromAudio = useCallback((sectionDraft, detectedBpm, shouldUpdateBpm) => {
+    patchCurrent((s) => {
+      const newSection = {
+        id: uid(),
+        type: sectionDraft.type,
+        label: sectionDraft.label,
+        bars: sectionDraft.bars,
+        chords: sectionDraft.chords,
+      };
+      const next = { ...s, sections: sortSections([...s.sections, newSection]) };
+      if (shouldUpdateBpm && detectedBpm) next.bpm = detectedBpm;
+      return next;
+    });
+    setAudioImportOpen(false);
+  }, [patchCurrent]);
+
   const transpose = useCallback((semitones) => {
     patchCurrent((s) => transposeSong(s, semitones));
   }, [patchCurrent]);
@@ -1074,6 +1103,7 @@ export default function App() {
           onBackToLibrary={backToLibrary}
           onSaveToCloud={CLOUD_ON ? saveCurrentToCloud : null}
           cloudStatus={cloudStatus}
+          onOpenAudioImport={() => setAudioImportOpen(true)}
         />
       )}
       {view === "editor" && currentSong && (
@@ -1087,6 +1117,13 @@ export default function App() {
           sections={currentSong.sections}
           onSet={handleSetChord}
           onClose={() => setPicker(null)}
+        />
+      )}
+      {audioImportOpen && currentSong && (
+        <AudioImportModal
+          song={currentSong}
+          onCreateSection={addSectionFromAudio}
+          onClose={() => setAudioImportOpen(false)}
         />
       )}
     </>
