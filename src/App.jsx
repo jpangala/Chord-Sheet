@@ -1,412 +1,12 @@
 import { SEC_COLORS, beatsPerBar, chordStr, detectDuplicateRuns, groupByConsecutiveType, renderBarRows, transposeSong } from './printUtils.js';
 import { cloudDeleteSong, cloudFetchSongs, cloudSaveSong, isCloudEnabled } from './cloud.js';
 import { useState, useEffect, useRef, useCallback } from "react";
+import { uid, sortSections, makeSection, makeSong, makeSongRecord, timeAgo, loadData, saveData } from './models.js';
+import { SECTION_TYPES, TIME_SIGS, ROOTS, QUALITIES, ROOTS_BY_LEN, QUAL_VALS_BY_LEN, parseChord, ALL_CHORDS, getChordSuggestions } from './chords.js';
+import { ChordPicker } from './ChordPicker.jsx';
+import { AudioImportModal } from './AudioImportModal.jsx';
 
 const CLOUD_ON = isCloudEnabled();
-
-// ─── Constants ────────────────────────────────────────────────
-const SECTION_TYPES = [
-  "Intro","Verse","Pre-Chorus","Chorus","Refrain","Post-Chorus",
-  "Bridge","Breakdown","Instrumental","Solo","Interlude",
-  "Build-Up","Drop","Outro","Coda","Tag",
-];
-const TIME_SIGS = ["2/4","3/4","4/4","5/4","6/8","7/8","12/8"];
-const ROOTS = ["C","C#","D","Eb","E","F","F#","G","Ab","A","Bb","B"];
-const QUALITIES = [
-  {v:"",   l:"maj"},  {v:"m",    l:"min"},   {v:"7",    l:"7"},
-  {v:"maj7",l:"maj7"},{v:"m7",   l:"m7"},    {v:"6",    l:"6"},
-  {v:"m6", l:"m6"},   {v:"9",    l:"9"},     {v:"maj9", l:"maj9"},
-  {v:"m9", l:"m9"},   {v:"dim",  l:"dim"},   {v:"dim7", l:"dim7"},
-  {v:"aug",l:"aug"},  {v:"sus2", l:"sus2"},  {v:"sus4", l:"sus4"},
-  {v:"add9",l:"add9"},{v:"13",   l:"13"},    {v:"5",    l:"5 (power)"},
-];
-// ─── Helpers ──────────────────────────────────────────────────
-let _idN = 0;
-function uid() { return `id${Date.now()}${++_idN}`; }
-
-// Canonical song-flow rank — preserves the user's insertion order within a type.
-const SECTION_RANK = Object.fromEntries(
-  ["Intro","Verse","Pre-Chorus","Chorus","Refrain","Post-Chorus",
-   "Bridge","Breakdown","Instrumental","Solo","Interlude",
-   "Build-Up","Drop","Outro","Coda","Tag"].map((t, i) => [t, i])
-);
-function sortSections(sections) {
-  // Array.prototype.sort is stable (ES2019+), so equal ranks keep insertion order.
-  return [...sections].sort((a, b) =>
-    (SECTION_RANK[a.type] ?? 999) - (SECTION_RANK[b.type] ?? 999)
-  );
-}
-
-function makeSection(type) {
-  return { id: uid(), type, label: "", bars: 4, chords: {} };
-}
-function makeSong() {
-  return { title: "", artist: "", key: "C", bpm: 120, timeSig: "4/4" };
-}
-function makeSongRecord(meta) {
-  const now = Date.now();
-  const m = meta || {};
-  return {
-    id: uid(),
-    title: m.title || "",
-    artist: m.artist || "",
-    key: m.key || "C",
-    bpm: m.bpm ?? 120,
-    timeSig: m.timeSig || "4/4",
-    sections: [makeSection("Intro")],
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-function timeAgo(ts) {
-  if (!ts) return "";
-  const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return "just now";
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  return new Date(ts).toLocaleDateString();
-}
-
-// ─── Persistence (localStorage) ───────────────────────────────
-// v2 shape: { songs: SongRecord[], currentSongId: string|null }
-// v1 shape (legacy): { song, sections }  — migrated on first load.
-const LS_V1 = "chordsheet_v1";
-const LS_V2 = "chordsheet_v2";
-function loadData() {
-  try {
-    const raw = localStorage.getItem(LS_V2);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.songs)) return parsed;
-    }
-  } catch {}
-  // Migrate from v1 single-song shape
-  try {
-    const rawV1 = localStorage.getItem(LS_V1);
-    if (rawV1) {
-      const old = JSON.parse(rawV1);
-      if (old?.song?.title) {
-        const now = Date.now();
-        const migrated = {
-          id: uid(),
-          title: old.song.title,
-          artist: old.song.artist || "",
-          key: old.song.key || "C",
-          bpm: old.song.bpm ?? 120,
-          timeSig: old.song.timeSig || "4/4",
-          sections: Array.isArray(old.sections) && old.sections.length
-            ? old.sections
-            : [makeSection("Intro")],
-          createdAt: now,
-          updatedAt: now,
-        };
-        return { songs: [migrated], currentSongId: null };
-      }
-    }
-  } catch {}
-  return { songs: [], currentSongId: null };
-}
-function saveData(data) {
-  try { localStorage.setItem(LS_V2, JSON.stringify(data)); } catch {}
-}
-
-// ─────────────────────────────────────────────────────────────
-// Chord parsing & autocomplete namespace
-// ─────────────────────────────────────────────────────────────
-// Roots sorted longest-first so "C#" wins over "C" during prefix-matching.
-const ROOTS_BY_LEN = [...ROOTS].sort((a, b) => b.length - a.length);
-// Quality VALUES (not labels) sorted longest-first so "maj7" wins over "maj".
-const QUAL_VALS_BY_LEN = QUALITIES.map((q) => q.v).filter((v) => v.length > 0).sort((a, b) => b.length - a.length);
-
-function parseChord(text) {
-  if (!text) return null;
-  let s = text.trim();
-  if (!s) return null;
-  // Auto-capitalize first letter so "cm7" → "Cm7"
-  if (/^[a-g]/.test(s)) s = s[0].toUpperCase() + s.slice(1);
-  let root = null;
-  for (const r of ROOTS_BY_LEN) {
-    if (s.startsWith(r)) { root = r; s = s.slice(r.length); break; }
-  }
-  if (!root) return null;
-  let qual = "";
-  for (const q of QUAL_VALS_BY_LEN) {
-    if (s.startsWith(q)) { qual = q; s = s.slice(q.length); break; }
-  }
-  let bass = "";
-  if (s.startsWith("/")) {
-    s = s.slice(1);
-    if (/^[a-g]/.test(s)) s = s[0].toUpperCase() + s.slice(1);
-    for (const r of ROOTS_BY_LEN) {
-      if (s.startsWith(r)) { bass = r; s = s.slice(r.length); break; }
-    }
-    if (!bass) return null;
-  }
-  if (s.length > 0) return null; // trailing garbage
-  return { root, qual, bass };
-}
-
-// Full chord namespace (~2,500 strings), generated once.
-const ALL_CHORDS = (() => {
-  const out = [];
-  for (const r of ROOTS) {
-    for (const q of QUALITIES) {
-      out.push(r + q.v);
-      for (const b of ROOTS) {
-        if (b !== r) out.push(r + q.v + "/" + b);
-      }
-    }
-  }
-  return out;
-})();
-
-function getChordSuggestions(text, limit = 8) {
-  const t = (text || "").trim();
-  if (!t) return [];
-  // Case-insensitive prefix; preserve exact-case match in the list.
-  const tl = t.toLowerCase();
-  const out = [];
-  for (const c of ALL_CHORDS) {
-    if (c.toLowerCase().startsWith(tl) && c !== t) {
-      out.push(c);
-      if (out.length >= limit) break;
-    }
-  }
-  return out;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Chord Picker Modal
-// ─────────────────────────────────────────────────────────────
-function ChordPicker({ sectionId, barIdx, beatIdx, sections, onSet, onClose }) {
-  const sec = sections.find((s) => s.id === sectionId);
-  const existing = sec?.chords[`${barIdx}-${beatIdx}`] || null;
-  const [root, setRoot] = useState(existing?.root || "C");
-  const [qual, setQual] = useState(existing?.qual ?? "");
-  const [bass, setBass] = useState(existing?.bass || "");
-  const [text, setText] = useState(chordStr(existing) || (existing ? "" : "C"));
-  const [showSuggest, setShowSuggest] = useState(false);
-  const [activeSuggest, setActiveSuggest] = useState(0);
-  const ref = useRef();
-  const inputRef = useRef();
-
-  const suggestions = showSuggest ? getChordSuggestions(text) : [];
-
-  const commitTyped = (raw) => {
-    setText(raw);
-    const parsed = parseChord(raw);
-    if (parsed) {
-      setRoot(parsed.root);
-      setQual(parsed.qual);
-      setBass(parsed.bass);
-    }
-    setActiveSuggest(0);
-  };
-
-  const pickFromButton = (next) => {
-    const nr = next.root ?? root;
-    const nq = next.qual ?? qual;
-    const nb = next.bass ?? bass;
-    if (next.root !== undefined) setRoot(nr);
-    if (next.qual !== undefined) setQual(nq);
-    if (next.bass !== undefined) setBass(nb);
-    setText(chordStr({ root: nr, qual: nq, bass: nb }) || "");
-    setShowSuggest(false);
-  };
-
-  const applySuggestion = (s) => {
-    commitTyped(s);
-    setShowSuggest(false);
-    inputRef.current?.focus();
-  };
-
-  useEffect(() => {
-    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, [onClose]);
-
-  // Close on Escape
-  useEffect(() => {
-    const h = (e) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", h);
-    return () => document.removeEventListener("keydown", h);
-  }, [onClose]);
-
-  const preview = chordStr({ root, qual, bass }) || "—";
-
-  const btn = (active) => ({
-    padding: "6px 4px",
-    borderRadius: 6,
-    border: "1px solid",
-    borderColor: active ? "#378ADD" : "var(--color-border)",
-    background: active ? "#E6F1FB" : "transparent",
-    color: active ? "#0C447C" : "var(--color-text)",
-    fontSize: 12,
-    fontWeight: active ? 600 : 400,
-    cursor: "pointer",
-    transition: "all 0.1s",
-  });
-
-  return (
-    <div
-      style={{
-        position: "fixed", inset: 0, zIndex: 1000,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        background: "rgba(0,0,0,0.4)",
-      }}
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div
-        ref={ref}
-        style={{
-          background: "var(--color-surface)",
-          border: "1px solid var(--color-border-strong)",
-          borderRadius: 16, padding: "1.5rem",
-          width: 340, maxHeight: "90vh", overflowY: "auto",
-          boxShadow: "0 16px 48px rgba(0,0,0,0.2)",
-          display: "flex", flexDirection: "column", gap: 16,
-        }}
-      >
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 12, color: "var(--color-text-3)" }}>
-            Bar {barIdx + 1} · Beat {beatIdx + 1}
-          </span>
-          <button
-            onClick={onClose}
-            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "var(--color-text-2)", padding: "0 4px", lineHeight: 1 }}
-          >×</button>
-        </div>
-
-        {/* Preview */}
-        <div style={{ textAlign: "center", padding: "0.75rem", background: "var(--color-surface-2)", borderRadius: 10 }}>
-          <div style={{ fontSize: 36, fontWeight: 700, fontFamily: "var(--font-serif)", color: "var(--color-text)", lineHeight: 1 }}>
-            {preview}
-          </div>
-        </div>
-
-        {/* Typed input with autocomplete */}
-        <div style={{ position: "relative" }}>
-          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Type</div>
-          <input
-            ref={inputRef}
-            value={text}
-            onChange={(e) => { commitTyped(e.target.value); setShowSuggest(true); }}
-            onFocus={() => setShowSuggest(true)}
-            onBlur={() => setTimeout(() => setShowSuggest(false), 120)}
-            onKeyDown={(e) => {
-              if (e.key === "ArrowDown" && suggestions.length) {
-                e.preventDefault();
-                setActiveSuggest((i) => Math.min(suggestions.length - 1, i + 1));
-              } else if (e.key === "ArrowUp" && suggestions.length) {
-                e.preventDefault();
-                setActiveSuggest((i) => Math.max(0, i - 1));
-              } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (showSuggest && suggestions[activeSuggest]) {
-                  applySuggestion(suggestions[activeSuggest]);
-                } else if (parseChord(text)) {
-                  onSet(parseChord(text));
-                }
-              } else if (e.key === "Escape" && showSuggest) {
-                e.preventDefault();
-                setShowSuggest(false);
-              }
-            }}
-            placeholder="e.g. Cmaj7, Am, Dm7/F"
-            style={{
-              width: "100%", padding: "8px 10px", borderRadius: 8,
-              border: parseChord(text) || !text ? "1px solid var(--color-border-strong)" : "1px solid var(--color-danger-border)",
-              background: "var(--color-surface)", color: "var(--color-text)",
-              fontSize: 14, fontFamily: "var(--font-serif)", outline: "none",
-            }}
-          />
-          {showSuggest && suggestions.length > 0 && (
-            <div style={{
-              position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
-              background: "var(--color-surface)",
-              border: "1px solid var(--color-border-strong)",
-              borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.15)",
-              zIndex: 10, maxHeight: 220, overflowY: "auto",
-            }}>
-              {suggestions.map((s, i) => (
-                <div
-                  key={s}
-                  onMouseDown={(e) => { e.preventDefault(); applySuggestion(s); }}
-                  onMouseEnter={() => setActiveSuggest(i)}
-                  style={{
-                    padding: "6px 10px", cursor: "pointer",
-                    fontSize: 13, fontFamily: "var(--font-serif)",
-                    background: i === activeSuggest ? "var(--color-surface-2)" : "transparent",
-                    color: "var(--color-text)",
-                  }}
-                >{s}</div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Root */}
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Root</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 4 }}>
-            {ROOTS.map((r) => (
-              <button key={r} onClick={() => pickFromButton({ root: r })} style={btn(root === r)}>{r}</button>
-            ))}
-          </div>
-        </div>
-
-        {/* Quality */}
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Quality</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 4 }}>
-            {QUALITIES.map((q) => (
-              <button key={q.v} onClick={() => pickFromButton({ qual: q.v })} style={btn(qual === q.v)}>{q.l}</button>
-            ))}
-          </div>
-        </div>
-
-        {/* Bass */}
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>Bass note (slash chord)</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 4 }}>
-            <button onClick={() => pickFromButton({ bass: "" })} style={btn(bass === "")}>none</button>
-            {ROOTS.map((r) => (
-              <button key={r} onClick={() => pickFromButton({ bass: r })} style={btn(bass === r)}>{r}</button>
-            ))}
-          </div>
-        </div>
-
-        {/* Actions */}
-        <div style={{ display: "flex", gap: 8, paddingTop: 4 }}>
-          <button
-            onClick={() => onSet(null)}
-            style={{
-              flex: 1, padding: "9px", borderRadius: 8,
-              border: "1px solid var(--color-border-strong)",
-              background: "transparent", color: "var(--color-text-2)",
-              fontSize: 13, cursor: "pointer",
-            }}
-          >Clear beat</button>
-          <button
-            onClick={() => onSet({ root, qual, bass })}
-            style={{
-              flex: 2, padding: "9px", borderRadius: 8, border: "none",
-              background: "var(--color-accent)", color: "var(--color-bg)",
-              fontSize: 13, fontWeight: 600, cursor: "pointer",
-            }}
-          >Set chord ↵</button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────
 // Beat Cell
@@ -976,7 +576,7 @@ function LibraryScreen({ songs, onOpen, onNew, onDuplicate, onDelete, onPullFrom
 // ─────────────────────────────────────────────────────────────
 // Editor Screen
 // ─────────────────────────────────────────────────────────────
-function EditorScreen({ song, sections, addSection, removeSection, duplicateSection, updateSection, openPicker, onTranspose, onBackToSetup, onBackToLibrary, onSaveToCloud, cloudStatus }) {
+function EditorScreen({ song, sections, addSection, removeSection, duplicateSection, updateSection, openPicker, onTranspose, onBackToSetup, onBackToLibrary, onSaveToCloud, cloudStatus, onOpenAudioImport }) {
   const transposeBtn = {
     width: 22, height: 22, borderRadius: 4,
     border: "1px solid var(--color-border)",
@@ -1050,6 +650,16 @@ function EditorScreen({ song, sections, addSection, removeSection, duplicateSect
             }}
           >← Library</button>
           <AddSectionMenu onAdd={addSection} />
+          <button
+            onClick={onOpenAudioImport}
+            style={{
+              padding: "7px 14px", borderRadius: 8,
+              border: "1px solid var(--color-border-strong)",
+              background: "var(--color-surface)", color: "var(--color-text)",
+              fontSize: 13, fontWeight: 500, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", minHeight: 34,
+            }}
+          >🎧 Import from Audio</button>
           <button
             onClick={() => window.print()}
             style={{
@@ -1313,6 +923,24 @@ export default function App() {
     }));
   }, [patchCurrent]);
 
+  const [audioImportOpen, setAudioImportOpen] = useState(false);
+
+  const addSectionFromAudio = useCallback((sectionDraft, detectedBpm, shouldUpdateBpm) => {
+    patchCurrent((s) => {
+      const newSection = {
+        id: uid(),
+        type: sectionDraft.type,
+        label: sectionDraft.label,
+        bars: sectionDraft.bars,
+        chords: sectionDraft.chords,
+      };
+      const next = { ...s, sections: sortSections([...s.sections, newSection]) };
+      if (shouldUpdateBpm && detectedBpm) next.bpm = detectedBpm;
+      return next;
+    });
+    setAudioImportOpen(false);
+  }, [patchCurrent]);
+
   const transpose = useCallback((semitones) => {
     patchCurrent((s) => transposeSong(s, semitones));
   }, [patchCurrent]);
@@ -1475,6 +1103,7 @@ export default function App() {
           onBackToLibrary={backToLibrary}
           onSaveToCloud={CLOUD_ON ? saveCurrentToCloud : null}
           cloudStatus={cloudStatus}
+          onOpenAudioImport={() => setAudioImportOpen(true)}
         />
       )}
       {view === "editor" && currentSong && (
@@ -1488,6 +1117,13 @@ export default function App() {
           sections={currentSong.sections}
           onSet={handleSetChord}
           onClose={() => setPicker(null)}
+        />
+      )}
+      {audioImportOpen && currentSong && (
+        <AudioImportModal
+          song={currentSong}
+          onCreateSection={addSectionFromAudio}
+          onClose={() => setAudioImportOpen(false)}
         />
       )}
     </>
