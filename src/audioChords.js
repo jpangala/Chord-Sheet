@@ -5,6 +5,7 @@
 import { ROOTS } from './chords.js';
 import { beatsPerBar } from './printUtils.js';
 import { analyze } from 'web-audio-beat-detector';
+import Meyda from 'meyda';
 
 // Only qualities reliably distinguishable from a 12-bin chroma vector.
 // Values match the `v` field of QUALITIES in chords.js exactly, so
@@ -199,4 +200,26 @@ export async function decodeAudioFile(file) {
  */
 export async function detectTempo(audioBuffer) {
   return analyze(audioBuffer);
+}
+
+const WINDOW_SIZE = 2048; // samples per analysis window
+const HOP_SIZE = 1024;    // 50% overlap between windows
+
+/**
+ * Slides a window across raw PCM samples, extracting a 12-bin chroma vector
+ * per window.
+ * @param {Float32Array} channelData
+ * @param {number} sampleRate
+ * @returns {{time:number, chroma:number[]}[]}
+ */
+export function extractChromaFrames(channelData, sampleRate) {
+  Meyda.bufferSize = WINDOW_SIZE;
+  Meyda.sampleRate = sampleRate;
+  const frames = [];
+  for (let start = 0; start + WINDOW_SIZE <= channelData.length; start += HOP_SIZE) {
+    const window = channelData.subarray(start, start + WINDOW_SIZE);
+    const chroma = Meyda.extract('chroma', window);
+    frames.push({ time: start / sampleRate, chroma });
+  }
+  return frames;
 }
