@@ -21,6 +21,8 @@ export const INSTRUMENTS = {
     },
   },
   keyboard: { id: 'keyboard', label: 'Keyboard', kind: 'keys', low: 21, high: 108, defaultFollow: 'highest', tunings: null },
+  // No pitch: hits are detected from the sound itself (drums.js), not transcribed to notes.
+  drums: { id: 'drums', label: 'Drums', kind: 'drums', defaultFollow: 'highest', tunings: null },
 };
 
 export const pitchClass = (midi) => ((midi % 12) + 12) % 12;

@@ -8,14 +8,19 @@ import { ROOTS } from './chords.js';
 import { Fretboard } from './Fretboard.jsx';
 import { Keyboard } from './Keyboard.jsx';
 import { TabStrip } from './TabStrip.jsx';
+import { DrumKit } from './DrumKit.jsx';
+import { DrumStrip } from './DrumStrip.jsx';
+import { detectDrumHits, buildDrumLine } from './drums.js';
 
 const MAX_ANALYSIS_SECONDS = 300;
 const TRANSCRIBE_SAMPLE_RATE = 22050; // mirrors transcription.js; importing it would pull tfjs into this chunk
-// minAmp: model confidence floor; gateDb: how far below the file's loud level a note may start (loudness.js)
+const DRUM_SAMPLE_RATE = 44100; // drums keep their highs: downsampling folds bright hats/cymbals into the low bands
+// minAmp: model confidence floor; gateDb: how far below the file's loud level a note may start (loudness.js);
+// drumFrac: how strong a drum hit must be relative to the strongest hits (drums.js)
 const SENSITIVITY = {
-  more: { minAmp: 0.2, gateDb: -42 },
-  balanced: { minAmp: 0.3, gateDb: -36 },
-  fewer: { minAmp: 0.45, gateDb: -28 },
+  more: { minAmp: 0.2, gateDb: -42, drumFrac: 0.2 },
+  balanced: { minAmp: 0.3, gateDb: -36, drumFrac: 0.3 },
+  fewer: { minAmp: 0.45, gateDb: -28, drumFrac: 0.6 },
 };
 const SPEEDS = [0.5, 0.75, 1];
 const CHORD_SHARE_WARNING = 0.25; // isolated source: above this it doesn't sound like a single line
@@ -33,6 +38,7 @@ export function InstrumentVisualizerModal({ onClose }) {
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
   const [rawNotes, setRawNotes] = useState([]);
+  const [drumFeatures, setDrumFeatures] = useState(null);
   const [loudness, setLoudness] = useState(null);
   const [tracks, setTracks] = useState([]); // play-along audio, never analyzed
   const [sensitivity, setSensitivity] = useState('balanced');
@@ -55,20 +61,28 @@ export function InstrumentVisualizerModal({ onClose }) {
   const tuning = instrument.tunings?.[tuningId]?.strings ?? null;
   const noteNames = tuning ? tuning.map((m) => ROOTS[m % 12]) : [];
 
-  const { line, chordShare } = useMemo(
-    () => buildLine(rawNotes, { instrument, tuning, ...SENSITIVITY[sensitivity], source, follow, loudness }),
-    [rawNotes, instrument, tuning, sensitivity, source, follow, loudness],
-  );
+  const isDrums = instrument.kind === 'drums';
+  const unit = isDrums ? 'hits' : 'notes';
+
+  const { line, chordShare } = useMemo(() => {
+    if (isDrums) {
+      const { drumFrac, gateDb } = SENSITIVITY[sensitivity];
+      return { line: buildDrumLine(drumFeatures, { frac: drumFrac, gateDb, loudness }), chordShare: null };
+    }
+    return buildLine(rawNotes, { instrument, tuning, ...SENSITIVITY[sensitivity], source, follow, loudness });
+  }, [isDrums, drumFeatures, rawNotes, instrument, tuning, sensitivity, source, follow, loudness]);
 
   const fail = (message) => { setErrorMessage(message); setStep('error'); };
 
   const runWorker = useCallback((payload) => new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./transcribeWorker.js', import.meta.url), { type: 'module' });
+    const worker = payload.drums
+      ? new Worker(new URL('./drumWorker.js', import.meta.url), { type: 'module' })
+      : new Worker(new URL('./transcribeWorker.js', import.meta.url), { type: 'module' });
     workerRef.current = worker;
     const done = () => { worker.terminate(); workerRef.current = null; };
     worker.onmessage = (e) => {
       if (e.data.type === 'progress') { setProgress(e.data.value); return; }
-      if (e.data.type === 'done') resolve(e.data.notes);
+      if (e.data.type === 'done') resolve(e.data.notes ?? e.data.features);
       else reject(new Error(e.data.message || 'Transcription failed'));
       done();
     };
@@ -93,22 +107,31 @@ export function InstrumentVisualizerModal({ onClose }) {
     if (stale()) return;
 
     try {
-      const samples = await resampleMono(decoded, TRANSCRIBE_SAMPLE_RATE, MAX_ANALYSIS_SECONDS);
+      const sampleRate = isDrums ? DRUM_SAMPLE_RATE : TRANSCRIBE_SAMPLE_RATE;
+      const samples = await resampleMono(decoded, sampleRate, MAX_ANALYSIS_SECONDS);
       if (stale()) return;
       // Check loudness before the model runs (the worker takes ownership of the samples).
-      const envelope = loudnessEnvelope(samples, TRANSCRIBE_SAMPLE_RATE);
+      const envelope = loudnessEnvelope(samples, sampleRate);
       if (isSilent(envelope)) return fail('This file looks silent, so there is nothing to learn from it.');
-      const [low, high] = instrumentRange(instrument, tuning);
-      const notes = await runWorker({
-        samples,
-        modelUrl: new URL(`${import.meta.env.BASE_URL}models/basic-pitch/model.json`, window.location.href).href,
-        minFreq: midiToHz(low - 1),
-        maxFreq: midiToHz(high + 1),
-      });
-      if (stale()) return;
-      if (!notes.length) return fail(`Couldn't hear any notes in the ${instrument.label.toLowerCase()}'s range.`);
-
-      setRawNotes(notes);
+      if (isDrums) {
+        const features = await runWorker({ drums: true, samples, sampleRate });
+        if (stale()) return;
+        if (!detectDrumHits(features).length) return fail("Couldn't hear any drum hits.");
+        setDrumFeatures(features);
+        setRawNotes([]);
+      } else {
+        const [low, high] = instrumentRange(instrument, tuning);
+        const notes = await runWorker({
+          samples,
+          modelUrl: new URL(`${import.meta.env.BASE_URL}models/basic-pitch/model.json`, window.location.href).href,
+          minFreq: midiToHz(low - 1),
+          maxFreq: midiToHz(high + 1),
+        });
+        if (stale()) return;
+        if (!notes.length) return fail(`Couldn't hear any notes in the ${instrument.label.toLowerCase()}'s range.`);
+        setRawNotes(notes);
+        setDrumFeatures(null);
+      }
       setLoudness(envelope);
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = URL.createObjectURL(file);
@@ -119,7 +142,7 @@ export function InstrumentVisualizerModal({ onClose }) {
     } catch (err) {
       if (!stale()) fail(err?.message ? `Transcription failed: ${err.message}` : 'Transcription failed. Try a different file.');
     }
-  }, [instrument, tuning, runWorker]);
+  }, [instrument, tuning, isDrums, runWorker]);
 
   const handleCancel = useCallback(() => {
     requestIdRef.current++;
@@ -213,6 +236,7 @@ export function InstrumentVisualizerModal({ onClose }) {
                 </select>
               </label>
             )}
+            {!isDrums && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <span style={caption}>What's in the file?</span>
               {Object.entries(SOURCES).map(([id, s]) => (
@@ -222,9 +246,12 @@ export function InstrumentVisualizerModal({ onClose }) {
                 </label>
               ))}
             </div>
+            )}
             <div style={{ textAlign: 'center', padding: '1.5rem 1rem', border: '2px dashed var(--color-border)', borderRadius: 12 }}>
               <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--color-text-2)' }}>
-                {source === 'isolated'
+                {isDrums
+                  ? 'Upload a recording of just the drums you want to learn (a drum stem or solo drum track). Kick, snare, hi-hat, toms and cymbals are detected from the sound.'
+                  : source === 'isolated'
                   ? `Upload a recording of just the ${instrument.label.toLowerCase()} line you want to learn (an intro, riff or solo).`
                   : 'Upload the song with the part you want to learn (an intro, riff or solo).'}
               </p>
@@ -235,7 +262,7 @@ export function InstrumentVisualizerModal({ onClose }) {
 
         {step === 'transcribing' && (
           <div style={{ textAlign: 'center', padding: '2rem 1rem' }}>
-            <p style={{ margin: 0, fontSize: 13, color: 'var(--color-text-2)' }}>Listening for notes… {Math.round(progress * 100)}%</p>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--color-text-2)' }}>Listening for {isDrums ? 'drum hits' : 'notes'}… {Math.round(progress * 100)}%</p>
             <button onClick={handleCancel} style={{ ...pill(false), marginTop: 14 }}>Cancel</button>
           </div>
         )}
@@ -259,13 +286,17 @@ export function InstrumentVisualizerModal({ onClose }) {
 
             {instrument.kind === 'fretted'
               ? <Fretboard tuning={tuning} frets={instrument.frets} noteNames={noteNames} current={current} next={next} />
-              : <Keyboard current={current} next={next} />}
+              : isDrums
+                ? <DrumKit current={current} next={next} />
+                : <Keyboard current={current} next={next} />}
 
-            <TabStrip line={line} tuning={tuning} noteNames={noteNames} currentIdx={pos.current} nextIdx={pos.next} onSeek={seekTo} />
+            {isDrums
+              ? <DrumStrip line={line} currentIdx={pos.current} nextIdx={pos.next} onSeek={seekTo} />
+              : <TabStrip line={line} tuning={tuning} noteNames={noteNames} currentIdx={pos.current} nextIdx={pos.next} onSeek={seekTo} />}
 
             {line.length === 0 && (
               <p style={{ margin: 0, fontSize: 12, color: 'var(--color-text-2)', background: 'var(--color-surface-2)', borderRadius: 8, padding: '8px 10px' }}>
-                No notes found at this sensitivity. Quiet or noisy parts are ignored; try "More notes" if the line is soft.
+                No {unit} found at this sensitivity. Quiet or noisy parts are ignored; try "More {unit}" if the part is soft.
               </p>
             )}
 
@@ -289,6 +320,7 @@ export function InstrumentVisualizerModal({ onClose }) {
               </p>
             )}
 
+            {!isDrums && (
             <div style={row}>
               <span style={caption}>Source</span>
               {Object.entries(SOURCES).map(([id, s]) => (
@@ -302,17 +334,20 @@ export function InstrumentVisualizerModal({ onClose }) {
                 </>
               )}
             </div>
+            )}
 
             <div style={row}>
               <span style={caption}>Sensitivity</span>
-              {[['more', 'More notes'], ['balanced', 'Balanced'], ['fewer', 'Fewer notes']].map(([k, l]) => (
+              {[['more', `More ${unit}`], ['balanced', 'Balanced'], ['fewer', `Fewer ${unit}`]].map(([k, l]) => (
                 <button key={k} style={pill(sensitivity === k)} onClick={() => setSensitivity(k)}>{l}</button>
               ))}
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: 11, color: 'var(--color-text-3)' }}>
-                Notes are what the audio contains; string choice is the most playable way to get those exact notes.
+                {isDrums
+                  ? 'Hits are detected from the sound; drum labels are best guesses, so toms and cymbals can be mixed up.'
+                  : 'Notes are what the audio contains; string choice is the most playable way to get those exact notes.'}
               </span>
               <button onClick={() => setStep('setup')} style={pill(false)}>Analyze another file</button>
             </div>
