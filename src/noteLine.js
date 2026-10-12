@@ -3,6 +3,7 @@
 // transcription.js. Pipeline: cleanNotes → (isolated: suppressHarmonics →
 // monophonize | full song: extractLine) → fingerLine.
 import { midiToName, instrumentRange } from './instruments.js';
+import { gateQuietNotes } from './loudness.js';
 
 const MIN_DURATION = 0.06;
 const HARMONIC_INTERVALS = [12, 19, 24]; // octave, octave+5th, two octaves
@@ -136,11 +137,12 @@ export function fingerLine(line, tuning, frets) {
 
 /**
  * Raw transcription → the line the view draws. Cheap; re-run on Source/Sensitivity/Follow change.
- * @param {{instrument, tuning, minAmp: number, source: 'isolated'|'mix', follow: 'lowest'|'highest'}} opts
+ * `loudness` + `gateDb` (optional) drop notes that start in near-silence, see loudness.js.
+ * @param {{instrument, tuning, minAmp: number, source: 'isolated'|'mix', follow: 'lowest'|'highest', loudness?: object, gateDb?: number}} opts
  * @returns {{ line: object[], chordShare: number|null }} chordShare only for the isolated source
  */
-export function buildLine(rawNotes, { instrument, tuning, minAmp, source, follow }) {
-  const cleaned = cleanNotes(rawNotes, instrumentRange(instrument, tuning), { minAmp });
+export function buildLine(rawNotes, { instrument, tuning, minAmp, source, follow, loudness = null, gateDb = -36 }) {
+  const cleaned = gateQuietNotes(cleanNotes(rawNotes, instrumentRange(instrument, tuning), { minAmp }), loudness, gateDb);
   let line;
   let share = null;
   if (source === 'isolated') {

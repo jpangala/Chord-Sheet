@@ -2,6 +2,8 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { decodeAudioFile, resampleMono } from './audioChords.js';
 import { INSTRUMENTS, instrumentRange, midiToHz, findNoteAt, findNextNote } from './instruments.js';
 import { buildLine } from './noteLine.js';
+import { loudnessEnvelope, isSilent } from './loudness.js';
+import { BackingTracks } from './BackingTracks.jsx';
 import { ROOTS } from './chords.js';
 import { Fretboard } from './Fretboard.jsx';
 import { Keyboard } from './Keyboard.jsx';
@@ -9,7 +11,12 @@ import { TabStrip } from './TabStrip.jsx';
 
 const MAX_ANALYSIS_SECONDS = 300;
 const TRANSCRIBE_SAMPLE_RATE = 22050; // mirrors transcription.js; importing it would pull tfjs into this chunk
-const SENSITIVITY = { more: 0.2, balanced: 0.3, fewer: 0.45 }; // → cleanNotes minAmp
+// minAmp: model confidence floor; gateDb: how far below the file's loud level a note may start (loudness.js)
+const SENSITIVITY = {
+  more: { minAmp: 0.2, gateDb: -42 },
+  balanced: { minAmp: 0.3, gateDb: -36 },
+  fewer: { minAmp: 0.45, gateDb: -28 },
+};
 const SPEEDS = [0.5, 0.75, 1];
 const CHORD_SHARE_WARNING = 0.25; // isolated source: above this it doesn't sound like a single line
 const SOURCES = {
@@ -26,6 +33,8 @@ export function InstrumentVisualizerModal({ onClose }) {
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
   const [rawNotes, setRawNotes] = useState([]);
+  const [loudness, setLoudness] = useState(null);
+  const [tracks, setTracks] = useState([]); // play-along audio, never analyzed
   const [sensitivity, setSensitivity] = useState('balanced');
   const [source, setSource] = useState('isolated');
   const [follow, setFollow] = useState(INSTRUMENTS.bass.defaultFollow);
@@ -37,6 +46,8 @@ export function InstrumentVisualizerModal({ onClose }) {
   const workerRef = useRef(null);
   const requestIdRef = useRef(0);
   const audioUrlRef = useRef(null);
+  const tracksRef = useRef(tracks);
+  tracksRef.current = tracks;
   const loopRef = useRef(loop);
   loopRef.current = loop;
 
@@ -45,8 +56,8 @@ export function InstrumentVisualizerModal({ onClose }) {
   const noteNames = tuning ? tuning.map((m) => ROOTS[m % 12]) : [];
 
   const { line, chordShare } = useMemo(
-    () => buildLine(rawNotes, { instrument, tuning, minAmp: SENSITIVITY[sensitivity], source, follow }),
-    [rawNotes, instrument, tuning, sensitivity, source, follow],
+    () => buildLine(rawNotes, { instrument, tuning, ...SENSITIVITY[sensitivity], source, follow, loudness }),
+    [rawNotes, instrument, tuning, sensitivity, source, follow, loudness],
   );
 
   const fail = (message) => { setErrorMessage(message); setStep('error'); };
@@ -84,6 +95,9 @@ export function InstrumentVisualizerModal({ onClose }) {
     try {
       const samples = await resampleMono(decoded, TRANSCRIBE_SAMPLE_RATE, MAX_ANALYSIS_SECONDS);
       if (stale()) return;
+      // Check loudness before the model runs (the worker takes ownership of the samples).
+      const envelope = loudnessEnvelope(samples, TRANSCRIBE_SAMPLE_RATE);
+      if (isSilent(envelope)) return fail('This file looks silent, so there is nothing to learn from it.');
       const [low, high] = instrumentRange(instrument, tuning);
       const notes = await runWorker({
         samples,
@@ -95,6 +109,7 @@ export function InstrumentVisualizerModal({ onClose }) {
       if (!notes.length) return fail(`Couldn't hear any notes in the ${instrument.label.toLowerCase()}'s range.`);
 
       setRawNotes(notes);
+      setLoudness(envelope);
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = URL.createObjectURL(file);
       setAudioUrl(audioUrlRef.current);
@@ -117,6 +132,7 @@ export function InstrumentVisualizerModal({ onClose }) {
     requestIdRef.current++;
     workerRef.current?.terminate();
     if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+    tracksRef.current.forEach((t) => URL.revokeObjectURL(t.url));
   }, []);
 
   useEffect(() => { if (audioRef.current) audioRef.current.playbackRate = speed; }, [speed, audioUrl]);
@@ -140,6 +156,12 @@ export function InstrumentVisualizerModal({ onClose }) {
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [step, line]);
+
+  const removeTrack = (id) => {
+    const t = tracks.find((x) => x.id === id);
+    if (t) URL.revokeObjectURL(t.url);
+    setTracks((ts) => ts.filter((x) => x.id !== id));
+  };
 
   const seekTo = (t) => { if (audioRef.current) audioRef.current.currentTime = t + 0.001; };
   const now = () => audioRef.current?.currentTime ?? 0;
@@ -241,7 +263,15 @@ export function InstrumentVisualizerModal({ onClose }) {
 
             <TabStrip line={line} tuning={tuning} noteNames={noteNames} currentIdx={pos.current} nextIdx={pos.next} onSeek={seekTo} />
 
+            {line.length === 0 && (
+              <p style={{ margin: 0, fontSize: 12, color: 'var(--color-text-2)', background: 'var(--color-surface-2)', borderRadius: 8, padding: '8px 10px' }}>
+                No notes found at this sensitivity. Quiet or noisy parts are ignored; try "More notes" if the line is soft.
+              </p>
+            )}
+
             <audio ref={audioRef} src={audioUrl} controls style={{ width: '100%' }} />
+
+            <BackingTracks masterRef={audioRef} tracks={tracks} setTracks={setTracks} onRemove={removeTrack} ui={{ pill, caption, row }} />
 
             <div style={row}>
               <span style={caption}>Speed</span>

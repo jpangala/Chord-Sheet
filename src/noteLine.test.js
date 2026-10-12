@@ -3,6 +3,7 @@ import {
   cleanNotes, suppressHarmonics, monophonize, chordShare, extractLine, fingerLine, buildLine,
 } from './noteLine.js'
 import { INSTRUMENTS } from './instruments.js'
+import { loudnessEnvelope } from './loudness.js'
 
 const STD = INSTRUMENTS.guitar.tunings.standard.strings
 const BASS4 = INSTRUMENTS.bass.tunings.standard4.strings
@@ -122,6 +123,15 @@ describe('buildLine', () => {
     const ghosty = [{ midi: 57, start: 0, end: 0.5, amp: 0.8 }, { midi: 69, start: 0.01, end: 0.4, amp: 0.3 }]
     expect(buildLine(ghosty, opts({ source: 'isolated' })).line.map((n) => n.name)).toEqual(['A3'])
     expect(buildLine(ghosty, opts({ source: 'mix' })).line[0].name).toBe('A4')
+  })
+  it('drops notes that start in near-silence when a loudness envelope is given', () => {
+    // 1 s loud, then 1 s of hiss ~50 dB down; the E2 in the hiss is invented
+    const SR = 1000
+    const x = Float32Array.from({ length: 2 * SR }, (_, i) => (i < SR ? 0.5 : 0.0015) * Math.sin(2 * Math.PI * 50 * i / SR))
+    const loudness = loudnessEnvelope(x, SR)
+    const notes = [{ midi: 45, start: 0, end: 0.9, amp: 0.8 }, { midi: 40, start: 1.3, end: 1.9, amp: 0.8 }]
+    expect(buildLine(notes, opts({ loudness, gateDb: -36 })).line.map((n) => n.name)).toEqual(['A2'])
+    expect(buildLine(notes, opts()).line.map((n) => n.name)).toEqual(['A2', 'E2'])
   })
   it('reports chordShare for the isolated source only', () => {
     const strums = [0, 1].flatMap((t) => [48, 52, 55].map((midi, i) => ({ midi, start: t + i * 0.01, end: t + 1, amp: 0.7 })))
