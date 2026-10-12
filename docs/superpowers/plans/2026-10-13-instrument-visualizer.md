@@ -57,6 +57,20 @@ Steps 2–3 are pure, Vitest-tested functions that are cheap to re-run, so the S
 
 ---
 
+## Implementation notes (recorded while executing, 2026-10-13)
+
+**Worker spike (Task 1, Step 6): WebGL path taken, with two additions to the plan.**
+- tfjs 3.21's `PlatformBrowser.setTimeoutCustom` calls `window.setTimeout`, and `window` doesn't exist in a worker. WebGL tensor readback (fence polling) therefore threw an unhandled rejection and **the model never finished** (progress stuck at 0%). `transcribeWorker.js` now sets `self.window = self` after the imports.
+- Safety net: the worker probes WebGL with a tiny matmul and falls back to the CPU backend if it doesn't return within 3 s. The worker therefore imports `@tensorflow/tfjs` directly (same deduped 3.21.0 copy basic-pitch uses), so it is a normal **dependency**, not a devDependency as D1 said. The main bundle still has no tfjs.
+- No `vite.config.js` change was needed for worker format.
+
+**Measured (embedded Chromium pane, WebGL backend):** 10 s clip ≈ 1.5 s; 5-minute clip ≈ 27 s with progress updating; Cancel mid-run returns to setup. CPU backend (forced before the shim) was several times slower.
+
+**Task 9 results.** Only synthetic audio was available (no real recordings), so thresholds were deliberately **not** tuned. Verified: Source / Follow / Sensitivity re-run instantly with no re-transcription; Follow shows only for Full song; the chord warning stays hidden for a single-note line; silent file → "Couldn't hear any notes…"; speed 50/75/100% keeps pitch; A–B loop wraps; clicking a tab column seeks; 375 px width has no page overflow (fretboard and tab scroll in their own containers); light and dark themes render. **Still to do with real recordings:** every accuracy item in the Task 9 checklist (octaves on real bass, ghost removal, vocals in a full mix, known-riff comparison) and the "Import from Audio" regression in the editor.
+- Observation: a synthetic additive "bass" produced spurious B3 notes (the 6th harmonic of E1, +31 semitones) that `suppressHarmonics` doesn't cover; "Full song → Bottom line" gave a cleaner result than "Only my instrument" on that clip. Revisit `HARMONIC_INTERVALS` only if real recordings show the same.
+
+---
+
 ## Design decisions
 
 ### D1. Transcription in a worker, model in `public/`
