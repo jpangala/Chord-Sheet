@@ -4,15 +4,16 @@
 // so Sensitivity can re-run it instantly (same split as noteLine.js).
 //
 // 1. Timing: one onset curve (the biggest rise in any band's energy), peak-picked.
-// 2. Label: how much energy each hit ADDS in four bands, judged by ratios between
-//    bands (not by which band "had an onset", which real stems smear together):
+// 2. Label: how much energy each hit ADDS in four bands, judged against THIS FILE's own
+//    hits (a separated stem can have lost most of its highs, so fixed levels fail):
 //      low  32–107 Hz   kick fundamental
 //      body 107–430 Hz  toms, snare body
 //      crack 1.5–6 kHz  snare wires, stick attack
 //      air  6–11 kHz    hi-hat, cymbals
-//    hi-hat/cymbal: no body, just highs · kick: low-dominated · snare: body + noise ·
-//    tom: body without noise. A hi-hat on top of another drum is spotted when the air
-//    band is denser than the crack band.
+//    Each band is scaled by its 90th-percentile hit, and the kick's own body signature is
+//    measured from the file's pure kicks so a kick + snare together can be told from a kick.
+//    kick: strong low band · snare: body not explained by a kick, with some crack ·
+//    tom: that body without crack · hi-hat/cymbal: highs with no body.
 import { gateQuietNotes } from './loudness.js';
 
 export const DRUMS = {
@@ -42,16 +43,23 @@ const PRE_FRAMES = 4;        // frames before the flux peak that count as "befor
 const SETTLE_FROM = 3;       // frames after the flux peak over which the body pitch is read
 const SETTLE_TO = 6;
 
-const HAS_BODY = 0.5;        // body density must be at least this x the crack density to count as a drum with body
-const KICK_LOW_OVER_BODY = 1.5;
-const KICK_CENTROID = 100;   // Hz
-const FLOOR_TOM_CENTROID = 140;
-const SNARE_NOISE = 0.15;    // crack density as a fraction of body density: noise = snare wires, none = tom
-const HAT_OVER_CRACK = 0.8;  // on a snare: a snare's own highs fall off, so air nearly as dense as crack means a hat is on top
-const HAT_MIN_OF_BODY = 0.01; // on a kick/tom: air must be at least this fraction of the body energy (they have almost none)
-const SUSTAIN_LOOKAHEAD = 0.1; // s after the hit at which a hat has died away and a cymbal still rings
-const SUSTAIN_MIN = 0.06;      // s of room needed before the next hit to judge ringing; less = assume hi-hat
-const CYMBAL_SUSTAIN = 0.3;    // air energy left at the lookahead (vs its peak) that means a cymbal
+const REFERENCE_PERCENTILE = 0.9; // a band's "loud hit" level: this percentile of its added energy over all hits
+const MIN_PURE_KICKS = 3;         // pure kicks needed to measure the kick's body signature; else use defaults
+const DEFAULT_KICK_BODY = 0.25;   // body/low ratio of a kick when the file has too few to measure
+const DEFAULT_KICK_CENTROID = 90; // Hz
+const KICK_MIN = 0.4;             // low band at least this fraction of a loud hit = a kick (or floor tom)
+const FLOOR_TOM_ABOVE_KICK = 25;  // Hz above the file's kick centroid that makes a low hit a floor tom
+const MID_EXPLAINED = 1.2;        // body up to this x (kick body ratio x low) is just the kick's own
+const MID_MIN = 0.15;             // body left over, as a fraction of a loud hit, that means a snare or tom
+const SNARE_CRACK = 0.4;          // crack as a fraction of a loud hit: some crack = snare wires, none = tom
+const LOW_TOM_CENTROID = 150;     // Hz: mid-body tom pitch below this is the floor tom
+const HIGHS_ALONE = 0.2;          // highs (crack or air, fraction of a loud hit) that count as a hat/cymbal with no body
+const KICK_AIR_MARGIN = 3;        // air up to this x what the file's own kicks produce is just the kick
+const HAT_ON_KICK = 0.3;          // air beyond that, as a fraction of a loud hit, that means a hat/cymbal on a kick or tom
+const HAT_OVER_SNARE = 1.5;       // air relative to crack, vs a snare's own, that means a hat is on top
+const SUSTAIN_LOOKAHEAD = 0.1;    // s after the hit at which a hat has died away and a cymbal still rings
+const SUSTAIN_MIN = 0.06;         // s of room needed before the next hit to judge ringing; less = assume hi-hat
+const CYMBAL_SUSTAIN = 0.3;       // air energy left at the lookahead (vs its peak) that means a cymbal
 
 // ── FFT ──
 
@@ -159,20 +167,46 @@ function pickPeaks(flux, threshold, gapFrames) {
   return peaks;
 }
 
-/** Label one hit from the energy it adds per band. */
-function classify(added, centroidHz, airSustain) {
+const percentile = (values, p) => {
+  const s = Float64Array.from(values).sort();
+  return s.length ? s[Math.min(s.length - 1, Math.floor(s.length * p))] : 0;
+};
+
+/** What a loud hit looks like in this file, per band, plus how this file's kick sounds. */
+function referencesFor(profiles) {
+  const level = [LOW, BODY, CRACK, AIR].map((b) => Math.max(percentile(profiles.map((p) => p.added[b]), REFERENCE_PERCENTILE), 1e-9));
+  const pureKicks = profiles.filter((p) => p.added[LOW] >= KICK_MIN * level[LOW] && p.added[BODY] < 0.5 * p.added[LOW]);
+  const enough = pureKicks.length >= MIN_PURE_KICKS;
+  return {
+    level,
+    kickBody: enough ? median(pureKicks.map((p) => p.added[BODY] / p.added[LOW])) : DEFAULT_KICK_BODY,
+    kickCentroid: enough ? median(pureKicks.map((p) => p.centroid)) : DEFAULT_KICK_CENTROID,
+    kickAir: enough ? median(pureKicks.map((p) => p.added[AIR] / p.added[LOW])) : 0, // highs a kick leaks, per unit of low band
+  };
+}
+
+/** Label one hit from the energy it adds per band, relative to this file's loud hits. */
+function classify({ added, centroid, airSustain }, { level, kickBody, kickCentroid, kickAir }) {
   const [low, body, crack, air] = added;
+  const nLow = low / level[LOW];
+  const nCrack = crack / level[CRACK];
+  const nAir = air / level[AIR];
+  const mid = Math.max(0, body - MID_EXPLAINED * kickBody * low) / level[BODY]; // body a kick does not account for
   const drums = [];
-  const bodyDensity = Math.max(low, body);
-  let highs = air > 0 || crack > 0; // no body: hi-hat or cymbal on its own
-  if (bodyDensity > HAS_BODY * crack) {
-    if (low >= KICK_LOW_OVER_BODY * body && centroidHz <= KICK_CENTROID) drums.push('kick');
-    else if (crack > SNARE_NOISE * body) drums.push('snare');
-    else drums.push(centroidHz < FLOOR_TOM_CENTROID ? 'tomLow' : 'tomHigh');
-    // A snare's own wires reach the air band, so a hat on top must tilt the highs up;
-    // kicks and toms have almost no air of their own.
-    highs = drums[0] === 'snare' ? air > HAT_OVER_CRACK * crack : air > HAT_MIN_OF_BODY * bodyDensity;
+
+  // A low hit pitched above this file's kicks with no snare crack is one floor tom, not a kick.
+  const floorTom = nLow >= KICK_MIN && centroid > kickCentroid + FLOOR_TOM_ABOVE_KICK && (mid < MID_MIN || nCrack < SNARE_CRACK);
+  if (floorTom) drums.push('tomLow');
+  else if (nLow >= KICK_MIN) drums.push('kick');
+  let snare = false;
+  if (mid >= MID_MIN && !floorTom) {
+    snare = nCrack >= SNARE_CRACK;
+    drums.push(snare ? 'snare' : centroid < LOW_TOM_CENTROID ? 'tomLow' : 'tomHigh');
   }
+  let highs;
+  if (!drums.length) highs = nAir >= HIGHS_ALONE || nCrack >= HIGHS_ALONE;
+  else if (snare) highs = nAir > HAT_OVER_SNARE * Math.max(nCrack, SNARE_CRACK);
+  else highs = Math.max(0, air - KICK_AIR_MARGIN * kickAir * low) / level[AIR] >= HAT_ON_KICK; // air a kick does not explain
   if (highs) drums.push(airSustain > CYMBAL_SUSTAIN ? 'cymbal' : 'hihat');
   return drums;
 }
@@ -191,7 +225,8 @@ export function detectDrumHits(features, { frac = DEFAULT_FRAC } = {}) {
   const threshold = Math.max(MIN_FLUX, frac * median(candidates.map((p) => p.v)));
   const peaks = candidates.filter((p) => p.v >= threshold);
 
-  const events = peaks.map(({ i, v }, n) => {
+  // Pass 1: measure each hit.
+  const profiles = peaks.map(({ i, v }, n) => {
     const from = Math.max(0, i - PRE_FRAMES);
     const to = Math.min(frames - 1, i + ATTACK_FRAMES);
     const added = energy.map((curve) => {
@@ -209,10 +244,20 @@ export function detectDrumHits(features, { frac = DEFAULT_FRAC } = {}) {
     const room = n + 1 < peaks.length ? (peaks[n + 1].i - i) * hop - 0.02 : Infinity;
     const look = Math.min(SUSTAIN_LOOKAHEAD, room);
     const later = energy[AIR][Math.min(frames - 1, i + Math.round(look / hop))];
-    const airSustain = look >= SUSTAIN_MIN && peakAir > 0 ? later / peakAir : 0;
-    const drums = classify(added, cCount ? cSum / cCount : centroid[i], airSustain);
-    return { start: i * hop + ONSET_OFFSET - lead, drums, amp: Math.min(1, v / 8) };
-  }).filter((e) => e.drums.length);
+    return {
+      i, v, added,
+      centroid: cCount ? cSum / cCount : centroid[i],
+      airSustain: look >= SUSTAIN_MIN && peakAir > 0 ? later / peakAir : 0,
+    };
+  });
+
+  // Pass 2: label them against what is loud in this file.
+  const refs = referencesFor(profiles);
+  const events = profiles.map((p) => ({
+    start: p.i * hop + ONSET_OFFSET - lead,
+    drums: classify(p, refs),
+    amp: Math.min(1, p.v / 8),
+  })).filter((e) => e.drums.length);
 
   return events.map((e, i) => ({
     ...e,
