@@ -15,6 +15,7 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
   const [errorMessage, setErrorMessage] = useState('');
   const [truncated, setTruncated] = useState(false);
   const [detectedBpm, setDetectedBpm] = useState(null);
+  const [tempoFallback, setTempoFallback] = useState(false);
   const [updateBpm, setUpdateBpm] = useState(false);
   const [draft, setDraft] = useState(null); // { bars, chords, confidence }
   const [sectionType, setSectionType] = useState('Verse');
@@ -67,8 +68,14 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
     const channelData = audioBuffer.getChannelData(0).slice(0, cappedLength);
 
     try {
+      // Tempo detection needs a perceivable rhythmic pulse (drum hits, a steady
+      // strummed pattern) and throws on a-cappella/sustained-chord recordings
+      // with no beat to lock onto. That's a real, expected limitation of the
+      // library, not a reason to discard chord detection results — fall back
+      // to the song's existing BPM (still needed to lay out bars/beats) instead
+      // of failing the whole import.
       const [bpm, frames] = await Promise.all([
-        detectTempo(audioBuffer),
+        detectTempo(audioBuffer).catch(() => null),
         runWorkerAnalysis(channelData, audioBuffer.sampleRate),
       ]);
       if (requestId !== requestIdRef.current) return;
@@ -85,10 +92,12 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
         return;
       }
 
-      const bpmRounded = Math.round(bpm);
+      const tempoDetected = bpm !== null;
+      const bpmRounded = tempoDetected ? Math.round(bpm) : Math.round(song.bpm);
       const built = buildDraftSection(segments, bpmRounded, song.timeSig);
-      setDetectedBpm(bpmRounded);
-      setUpdateBpm(song.bpm === 120 || Math.abs(song.bpm - bpmRounded) > 5);
+      setDetectedBpm(tempoDetected ? bpmRounded : null);
+      setTempoFallback(!tempoDetected);
+      setUpdateBpm(tempoDetected && (song.bpm === 120 || Math.abs(song.bpm - bpmRounded) > 5));
       setDraft(built);
       setStep('preview');
     } catch (err) {
@@ -212,6 +221,11 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
                 Only the first 5 minutes of this file were analyzed.
               </p>
             )}
+            {tempoFallback && (
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--color-text-3)' }}>
+                Couldn't detect a clear tempo in this file — using the song's current BPM ({song.bpm}) to lay out bars.
+              </p>
+            )}
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
               <label style={{ fontSize: 11, color: 'var(--color-text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
                 Type
@@ -249,10 +263,12 @@ export function AudioImportModal({ song, onCreateSection, onClose }) {
               onBeatClick={(barIdx, beatIdx) => setPickerTarget({ barIdx, beatIdx })}
             />
 
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--color-text-2)' }}>
-              <input type="checkbox" checked={updateBpm} onChange={(e) => setUpdateBpm(e.target.checked)} />
-              Update song BPM to {detectedBpm} (currently {song.bpm})
-            </label>
+            {detectedBpm !== null && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--color-text-2)' }}>
+                <input type="checkbox" checked={updateBpm} onChange={(e) => setUpdateBpm(e.target.checked)} />
+                Update song BPM to {detectedBpm} (currently {song.bpm})
+              </label>
+            )}
 
             <div style={{ display: 'flex', gap: 8 }}>
               <button

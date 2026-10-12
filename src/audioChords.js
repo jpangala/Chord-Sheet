@@ -68,6 +68,26 @@ export function matchChordTemplates(chroma) {
 }
 
 /**
+ * Like matchChordTemplates, but returns the top N candidates sorted by
+ * confidence instead of just the winner — useful for telling "confidently
+ * correct" apart from "technically won but it was close," which a single
+ * score can't distinguish.
+ * @param {number[]} chroma
+ * @param {number} [topN]
+ * @returns {{ root: string, qual: string, confidence: number }[]}
+ */
+export function matchChordTemplatesRanked(chroma, topN = 3) {
+  return CHORD_TEMPLATES
+    .map((entry) => ({
+      root: entry.root,
+      qual: entry.qual,
+      confidence: Math.max(0, cosineSimilarity(chroma, entry.template)),
+    }))
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, topN);
+}
+
+/**
  * Groups consecutive identical-chord frames into segments, then merges any
  * segment shorter than `minSegmentSeconds` into its longer neighbor.
  * @param {{time:number, root:string, qual:string, confidence:number}[]} frames

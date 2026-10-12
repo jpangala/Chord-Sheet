@@ -5,6 +5,7 @@ import { uid, sortSections, makeSection, makeSong, makeSongRecord, timeAgo, load
 import { SECTION_TYPES, TIME_SIGS, ROOTS, QUALITIES, ROOTS_BY_LEN, QUAL_VALS_BY_LEN, parseChord, ALL_CHORDS, getChordSuggestions } from './chords.js';
 import { ChordPicker } from './ChordPicker.jsx';
 import { AudioImportModal } from './AudioImportModal.jsx';
+import { LiveChordTest } from './LiveChordTest.jsx';
 
 const CLOUD_ON = isCloudEnabled();
 
@@ -359,7 +360,7 @@ const cardIconBtn = {
   display: "flex", alignItems: "center", justifyContent: "center",
 };
 
-function LibraryScreen({ songs, onOpen, onNew, onDuplicate, onDelete, onPullFromCloud, cloudStatus }) {
+function LibraryScreen({ songs, onOpen, onNew, onDuplicate, onDelete, onPullFromCloud, cloudStatus, onOpenLiveChordTest }) {
   const [q, setQ] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(null);
 
@@ -419,6 +420,17 @@ function LibraryScreen({ songs, onOpen, onNew, onDuplicate, onDelete, onPullFrom
               }}
             >☁ {cloudStatus?.saving ? "Syncing…" : "Pull from cloud"}</button>
           )}
+          <button
+            onClick={onOpenLiveChordTest}
+            title="Diagnostic: shows raw pitch-class energy and the best-matching chord live from your mic"
+            style={{
+              padding: "7px 14px", borderRadius: 8,
+              border: "1px solid var(--color-border-strong)",
+              background: "var(--color-surface)", color: "var(--color-text)",
+              fontSize: 13, fontWeight: 500, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", gap: 6, minHeight: 34,
+            }}
+          >🎤 Live chord test</button>
           <button
             onClick={onNew}
             style={{
@@ -924,6 +936,7 @@ export default function App() {
   }, [patchCurrent]);
 
   const [audioImportOpen, setAudioImportOpen] = useState(false);
+  const [liveChordTestOpen, setLiveChordTestOpen] = useState(false);
 
   const addSectionFromAudio = useCallback((sectionDraft, detectedBpm, shouldUpdateBpm) => {
     patchCurrent((s) => {
@@ -1079,6 +1092,7 @@ export default function App() {
           onDelete={deleteSong}
           onPullFromCloud={CLOUD_ON ? pullFromCloud : null}
           cloudStatus={cloudStatus}
+          onOpenLiveChordTest={() => setLiveChordTestOpen(true)}
         />
       )}
       {view === "setup" && (
@@ -1125,6 +1139,9 @@ export default function App() {
           onCreateSection={addSectionFromAudio}
           onClose={() => setAudioImportOpen(false)}
         />
+      )}
+      {liveChordTestOpen && (
+        <LiveChordTest onClose={() => setLiveChordTestOpen(false)} />
       )}
     </>
   );
