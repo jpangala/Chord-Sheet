@@ -21,6 +21,8 @@
   --color-danger-bg: #FEF2F2;
   --color-danger-border: #FECACA;
   --color-danger-text: #991B1B;
+  --color-note: #E4572E;
+  --color-note-next: #2F6FDB;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -38,6 +40,8 @@
     --color-danger-bg: #2A1010;
     --color-danger-border: #5A2020;
     --color-danger-text: #FCA5A5;
+    --color-note: #FF7A50;
+    --color-note-next: #6EA2FF;
   }
 }
 
