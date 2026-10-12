@@ -214,6 +214,25 @@ export async function decodeAudioFile(file) {
 }
 
 /**
+ * Downmixes to mono and resamples (e.g. to the 22050 Hz basic-pitch requires)
+ * in one OfflineAudioContext render.
+ * @param {AudioBuffer} audioBuffer
+ * @param {number} sampleRate
+ * @param {number} [maxSeconds]
+ * @returns {Promise<Float32Array>}
+ */
+export async function resampleMono(audioBuffer, sampleRate, maxSeconds = Infinity) {
+  const seconds = Math.min(audioBuffer.duration, maxSeconds);
+  const ctx = new OfflineAudioContext(1, Math.ceil(seconds * sampleRate), sampleRate);
+  const src = ctx.createBufferSource();
+  src.buffer = audioBuffer;
+  src.connect(ctx.destination);
+  src.start();
+  const rendered = await ctx.startRendering();
+  return rendered.getChannelData(0).slice();
+}
+
+/**
  * Estimates tempo (BPM) from a decoded AudioBuffer.
  * @param {AudioBuffer} audioBuffer
  * @returns {Promise<number>}
