@@ -12,21 +12,31 @@ const START_DELAY = 0.08;
 const COUNT_IN_BEATS = 4;
 const NOTE_GATE = 0.9; // share of the written length the note sounds
 
+// Bass fundamentals (41–200 Hz) barely come out of laptop and phone speakers, so
+// the tone leans on harmonics: a saw plus an octave-up square through a plucky
+// lowpass and a presence boost around 700 Hz, with a little sine underneath for
+// weight on headphones and real speakers.
 function bassNote(ctx, out, midi, t, dur) {
   const hz = midiToHz(midi);
+  const decay = Math.min(0.25, dur * 0.7); // short notes finish their pluck before they end
   const filter = ctx.createBiquadFilter();
   filter.type = 'lowpass';
-  filter.Q.value = 2;
-  filter.frequency.setValueAtTime(Math.min(hz * 10, 2400), t);
-  filter.frequency.exponentialRampToValueAtTime(Math.max(hz * 2.5, 180), t + 0.25);
+  filter.Q.value = 1;
+  filter.frequency.setValueAtTime(Math.min(hz * 24, 5000), t);
+  filter.frequency.exponentialRampToValueAtTime(Math.max(hz * 8, 900), t + decay);
+  const presence = ctx.createBiquadFilter();
+  presence.type = 'peaking';
+  presence.frequency.value = 700;
+  presence.Q.value = 0.8;
+  presence.gain.value = 9;
   const amp = ctx.createGain();
   amp.gain.setValueAtTime(0.0001, t);
-  amp.gain.exponentialRampToValueAtTime(0.5, t + 0.008);
-  amp.gain.exponentialRampToValueAtTime(0.3, t + 0.2);
-  amp.gain.setValueAtTime(0.3, t + Math.max(dur - 0.04, 0.01));
-  amp.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.04);
-  filter.connect(amp).connect(out);
-  for (const [type, mult, level] of [['sawtooth', 1, 0.6], ['sine', 1, 0.8]]) {
+  amp.gain.exponentialRampToValueAtTime(0.6, t + 0.006);
+  amp.gain.exponentialRampToValueAtTime(0.35, t + decay);
+  amp.gain.setValueAtTime(0.35, t + Math.max(dur - 0.03, decay));
+  amp.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(dur, decay) + 0.04);
+  filter.connect(presence).connect(amp).connect(out);
+  for (const [type, mult, level] of [['sawtooth', 1, 0.5], ['square', 2, 0.2], ['sine', 1, 0.3]]) {
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
     osc.type = type;
@@ -34,7 +44,7 @@ function bassNote(ctx, out, midi, t, dur) {
     g.gain.value = level;
     osc.connect(g).connect(filter);
     osc.start(t);
-    osc.stop(t + dur + 0.06);
+    osc.stop(t + Math.max(dur, decay) + 0.06);
   }
 }
 
@@ -43,11 +53,11 @@ function click(ctx, out, t, accent) {
   const g = ctx.createGain();
   osc.type = 'square';
   osc.frequency.value = accent ? 1600 : 1000;
-  g.gain.setValueAtTime(accent ? 0.18 : 0.1, t);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
+  g.gain.setValueAtTime(accent ? 0.35 : 0.22, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
   osc.connect(g).connect(out);
   osc.start(t);
-  osc.stop(t + 0.04);
+  osc.stop(t + 0.05);
 }
 
 /**
