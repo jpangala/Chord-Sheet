@@ -1,12 +1,14 @@
 // Presentational SVG fretboard. `current` is solid; `next` is an outline ring
 // so the player sees where to go. Tab convention: high string on top.
+// Optional: `marks` ({string, fret, label, root}) draws a whole shape faintly
+// (roots filled); `onPick(string, fret)` makes every position clickable.
 const FRET_W = 36;
 const ROW_H = 24;
 const NUT_X = 48;
 const PAD_Y = 16;
 const INLAYS = [3, 5, 7, 9, 15, 17, 19, 21];
 
-export function Fretboard({ tuning, frets, noteNames, current, next }) {
+export function Fretboard({ tuning, frets, noteNames, current, next, marks = [], onPick }) {
   const n = tuning.length;
   const boardH = (n - 1) * ROW_H;
   const width = NUT_X + frets * FRET_W + 8;
@@ -34,6 +36,14 @@ export function Fretboard({ tuning, frets, noteNames, current, next }) {
         {[3, 5, 7, 9, 12, 15, 17, 19].filter((f) => f <= frets).map((f) => (
           <text key={f} x={x(f)} y={height - 4} fontSize={10} textAnchor="middle" fill="var(--color-text-3)">{f}</text>
         ))}
+        {marks.map((m) => (
+          <g key={`${m.string}:${m.fret}`}>
+            <circle cx={x(m.fret)} cy={y(m.string)} r={9}
+              fill={m.root ? 'var(--color-accent)' : 'var(--color-surface-2)'} stroke="var(--color-border-strong)" />
+            <text x={x(m.fret)} y={y(m.string) + 3} fontSize={8} fontWeight={600} textAnchor="middle"
+              fill={m.root ? 'var(--color-surface)' : 'var(--color-text-2)'}>{m.label}</text>
+          </g>
+        ))}
         {next && !samePos && (
           <circle cx={x(next.fret)} cy={y(next.string)} r={9} fill="none" stroke="var(--color-note-next)" strokeWidth={2.5} />
         )}
@@ -45,6 +55,13 @@ export function Fretboard({ tuning, frets, noteNames, current, next }) {
             </text>
           </g>
         )}
+        {onPick && tuning.map((_, s) => Array.from({ length: frets + 1 }, (__, f) => (
+          <rect key={`${s}:${f}`} x={f === 0 ? NUT_X - 26 : NUT_X + (f - 1) * FRET_W} y={y(s) - ROW_H / 2}
+            width={f === 0 ? 24 : FRET_W} height={ROW_H} fill="transparent" style={{ cursor: 'pointer' }}
+            onClick={() => onPick(s, f)}>
+            <title>{`${noteNames[s]} string, fret ${f}`}</title>
+          </rect>
+        )))}
       </svg>
     </div>
   );
