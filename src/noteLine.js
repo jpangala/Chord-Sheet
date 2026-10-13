@@ -11,6 +11,8 @@ const ONSET_WINDOW = 0.06;   // "started together"
 const DOUBLE_STOP_WINDOW = 0.03;
 const LINE_STEP = 0.01;      // extraction sweep resolution (s)
 const SHIFT_PENALTY = 3;     // moving the hand > 3 frets between two fretted notes
+const POS_COST = 0.1;        // per fret: prefer lower positions
+const STRING_COST = 0.15;    // per string crossed (a plucking-hand move: cheaper than a higher position)
 const LONG_REST = 1;         // s; after this the hand has time to move
 const LONG_REST_SCALE = 0.3;
 
@@ -96,6 +98,9 @@ export function extractLine(notes, follow = 'highest', { step = LINE_STEP, minDu
 /**
  * Viterbi over every string/fret that sounds each note, so the whole line is
  * played the way a player would: stay in position, shift only when it pays.
+ * The state also carries where the fretting hand is (the last fretted fret):
+ * open strings don't move it, so open E → fret 12 → open E pays for the hand
+ * living at the 12th instead of looking like two cheap open-string moves.
  * Notes must be within the instrument's range (cleanNotes guarantees it).
  * @returns {{string:number, fret:number}[]} one per note
  */
@@ -104,33 +109,41 @@ export function fingerLine(line, tuning, frets) {
   const cands = line.map((n) => tuning
     .map((open, string) => ({ string, fret: n.midi - open }))
     .filter((p) => p.fret >= 0 && p.fret <= frets));
-  const posCost = (p) => p.fret * 0.1;
-  const trans = (a, b, gap) => {
-    const dFret = a.fret === 0 || b.fret === 0 ? 0.5 : Math.abs(a.fret - b.fret);
-    const shift = a.fret && b.fret && Math.abs(a.fret - b.fret) > 3 ? SHIFT_PENALTY : 0;
-    return (dFret + shift) * (gap > LONG_REST ? LONG_REST_SCALE : 1) + Math.abs(a.string - b.string) * 0.3;
+  const posCost = (p) => p.fret * POS_COST;
+  const handAfter = (p, hand) => (p.fret === 0 ? hand : p.fret);
+  const move = (a, hand, b, gap) => {
+    const strings = Math.abs(a.string - b.string) * STRING_COST;
+    if (b.fret === 0 || hand === null) return strings;
+    const d = Math.abs(b.fret - hand);
+    return (d + (d > 3 ? SHIFT_PENALTY : 0)) * (gap > LONG_REST ? LONG_REST_SCALE : 1) + strings;
   };
 
-  let prev = cands[0].map((p) => ({ cost: posCost(p), back: -1 }));
-  const steps = [prev];
+  // One layer per note: `${candidate}|${hand}` → { k, hand, cost, back: previous layer key }
+  const keep = (layer, k, hand, cost, back) => {
+    const key = `${k}|${hand}`;
+    const cur = layer.get(key);
+    if (!cur || cost < cur.cost) layer.set(key, { k, hand, cost, back });
+  };
+  let layer = new Map();
+  cands[0].forEach((p, k) => keep(layer, k, handAfter(p, null), posCost(p), null));
+  const layers = [layer];
   for (let i = 1; i < line.length; i++) {
     const gap = line[i].start - line[i - 1].end;
-    prev = cands[i].map((b) => {
-      let best = { cost: Infinity, back: -1 };
-      cands[i - 1].forEach((a, k) => {
-        const c = steps[i - 1][k].cost + trans(a, b, gap);
-        if (c < best.cost) best = { cost: c, back: k };
-      });
-      return { cost: best.cost + posCost(b), back: best.back };
-    });
-    steps.push(prev);
+    const next = new Map();
+    for (const [prevKey, s] of layer) {
+      const a = cands[i - 1][s.k];
+      cands[i].forEach((b, k) => keep(next, k, handAfter(b, s.hand), s.cost + move(a, s.hand, b, gap) + posCost(b), prevKey));
+    }
+    layers.push(next);
+    layer = next;
   }
 
   const out = new Array(line.length);
-  let k = prev.reduce((bi, s, i, arr) => (s.cost < arr[bi].cost ? i : bi), 0);
+  let key = [...layer].reduce((best, e) => (e[1].cost < best[1].cost ? e : best))[0];
   for (let i = line.length - 1; i >= 0; i--) {
-    out[i] = cands[i][k];
-    k = steps[i][k].back;
+    const s = layers[i].get(key);
+    out[i] = cands[i][s.k];
+    key = s.back;
   }
   return out;
 }
