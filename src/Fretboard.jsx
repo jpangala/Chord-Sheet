@@ -1,14 +1,15 @@
 // Presentational SVG fretboard. `current` is solid; `next` is an outline ring
 // so the player sees where to go. Tab convention: high string on top.
 // Optional: `marks` ({string, fret, label, root}) draws a whole shape faintly
-// (roots filled); `onPick(string, fret)` makes every position clickable.
+// (roots filled); `path` ({string, fret}[] in playing order) draws a line
+// through them with order numbers; `onPick(string, fret)` makes every position clickable.
 const FRET_W = 36;
 const ROW_H = 24;
 const NUT_X = 48;
 const PAD_Y = 16;
 const INLAYS = [3, 5, 7, 9, 15, 17, 19, 21];
 
-export function Fretboard({ tuning, frets, noteNames, current, next, marks = [], onPick }) {
+export function Fretboard({ tuning, frets, noteNames, current, next, marks = [], path = [], onPick }) {
   const n = tuning.length;
   const boardH = (n - 1) * ROW_H;
   const width = NUT_X + frets * FRET_W + 8;
@@ -17,6 +18,12 @@ export function Fretboard({ tuning, frets, noteNames, current, next, marks = [],
   const x = (f) => (f === 0 ? NUT_X - 14 : NUT_X + (f - 0.5) * FRET_W);
   const midY = PAD_Y + boardH / 2;
   const samePos = current && next && current.string === next.string && current.fret === next.fret;
+  // Order numbers per position; a position visited twice reads "2,4".
+  const order = new Map();
+  path.forEach((p, i) => {
+    const key = `${p.string}:${p.fret}`;
+    order.set(key, { ...p, label: order.has(key) ? `${order.get(key).label},${i + 1}` : `${i + 1}` });
+  });
 
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -36,6 +43,10 @@ export function Fretboard({ tuning, frets, noteNames, current, next, marks = [],
         {[3, 5, 7, 9, 12, 15, 17, 19].filter((f) => f <= frets).map((f) => (
           <text key={f} x={x(f)} y={height - 4} fontSize={10} textAnchor="middle" fill="var(--color-text-3)">{f}</text>
         ))}
+        {path.length > 1 && (
+          <polyline points={path.map((p) => `${x(p.fret)},${y(p.string)}`).join(' ')} fill="none"
+            stroke="var(--color-note-next)" strokeWidth={2.5} strokeOpacity={0.55} strokeLinejoin="round" />
+        )}
         {marks.map((m) => (
           <g key={`${m.string}:${m.fret}`}>
             <circle cx={x(m.fret)} cy={y(m.string)} r={9}
@@ -44,6 +55,15 @@ export function Fretboard({ tuning, frets, noteNames, current, next, marks = [],
               fill={m.root ? 'var(--color-surface)' : 'var(--color-text-2)'}>{m.label}</text>
           </g>
         ))}
+        {[...order.values()].map((p) => {
+          const w = 6 + p.label.length * 5;
+          return (
+            <g key={`o${p.string}:${p.fret}`}>
+              <rect x={x(p.fret) + 4} y={y(p.string) - 17} width={w} height={12} rx={6} fill="var(--color-note-next)" />
+              <text x={x(p.fret) + 4 + w / 2} y={y(p.string) - 8} fontSize={8} fontWeight={700} textAnchor="middle" fill="#fff">{p.label}</text>
+            </g>
+          );
+        })}
         {next && !samePos && (
           <circle cx={x(next.fret)} cy={y(next.string)} r={9} fill="none" stroke="var(--color-note-next)" strokeWidth={2.5} />
         )}

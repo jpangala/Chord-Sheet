@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { INSTRUMENTS } from './instruments.js'
 import {
-  SCALES, ARPEGGIOS, LICKS, SCALE_PATTERNS, ARPEGGIO_PATTERNS, LICK_VARIATIONS, parseSteps, formatSteps, scaleSteps, arpeggioSteps, patternBeats, placeRoot, buildExercise,
+  SCALES, ARPEGGIOS, LICKS, SCALE_PATTERNS, ARPEGGIO_PATTERNS, LICK_VARIATIONS, parseSteps, formatSteps, scaleSteps, arpeggioSteps, patternBeats, placeRoot, buildExercise, openingMove,
 } from './bassTheory.js'
 
 const FOUR = INSTRUMENTS.bass.tunings.standard4.strings
@@ -153,6 +153,21 @@ describe('buildExercise', () => {
 
   it('returns an empty line when the pattern cannot fit', () => {
     expect(buildExercise(parseSteps('0/1 40/1'), opts).line).toEqual([])
+  })
+})
+
+describe('openingMove', () => {
+  const opts = { rootPc: E, tuning: FOUR, frets: 20 }
+  const opening = (id) => openingMove(buildExercise(pattern(SCALE_PATTERNS, id).build(MAJOR), opts).line).map((n) => n.degree)
+  it('is the notes of the first two beats, so each variation shows its own shape', () => {
+    expect(opening('updown')).toEqual(['R', '2', '3', '4'])
+    expect(opening('thirds')).toEqual(['R', '3', '2', '4'])
+    expect(opening('groups3')).toEqual(['R', '2', '3', '2', '3', '4'])
+    expect(opening('groups4')).toEqual(['R', '2', '3', '4', '2', '3', '4', '5'])
+  })
+  it('takes at least four notes when they are long', () => {
+    const line = buildExercise(arpeggioSteps([0, 4, 7, 11]), opts).line
+    expect(openingMove(line).map((n) => n.degree)).toEqual(['R', '3', '5', '7'])
   })
 })
 

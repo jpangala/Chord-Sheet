@@ -7,7 +7,7 @@ import { INSTRUMENTS, midiToName, pitchClass, findNoteAt, findNextNote } from '.
 import { ROOTS } from './chords.js';
 import {
   SCALES, ARPEGGIOS, LICKS, DEGREES, SCALE_PATTERNS, ARPEGGIO_PATTERNS, LICK_VARIATIONS, parseSteps, formatSteps,
-  patternBeats, buildExercise, loadUserLicks, saveUserLicks,
+  patternBeats, buildExercise, openingMove, loadUserLicks, saveUserLicks,
 } from './bassTheory.js';
 import { createPracticePlayer } from './practicePlayer.js';
 import { Fretboard } from './Fretboard.jsx';
@@ -73,6 +73,8 @@ export function ScalesLicksModal({ onClose }) {
     [draft, steps, rootPc, tuning, octaveUp],
   );
   const { line, totalBeats, marks } = exercise;
+  // Scale/arpeggio variations reorder the same notes, so show the order: the opening move, while stopped.
+  const path = !playing && (tab === 'scales' || tab === 'arpeggios') ? openingMove(line) : [];
   const responseFrom = !draft && variant.id === 'callResponse' ? totalBeats / 2 : null; // second half is the player's turn
 
   const stop = () => { playerRef.current.stop(); setPlaying(false); setPos(NO_POS); };
@@ -253,7 +255,7 @@ export function ScalesLicksModal({ onClose }) {
 
         {/* flexShrink 0: in a scrolling flex column these scroll boxes would otherwise be squashed and clip */}
         <div style={{ flexShrink: 0 }}>
-          <Fretboard tuning={tuning} frets={BASS.frets} noteNames={noteNames} current={current} next={next} marks={marks}
+          <Fretboard tuning={tuning} frets={BASS.frets} noteNames={noteNames} current={current} next={next} marks={marks} path={path}
             onPick={draft ? (string, fret) => addToDraft({ midi: tuning[string] + fret, string, fret }) : undefined} />
         </div>
 
@@ -278,7 +280,8 @@ export function ScalesLicksModal({ onClose }) {
         </div>
 
         <span style={{ fontSize: 11, color: 'var(--color-text-3)' }}>
-          Degrees on the fretboard are counted from the key's root (R). Click any note in the tab to start from there.
+          Degrees on the fretboard are counted from the key's root (R). For scales and arpeggios, the numbered line shows
+          how the variation starts. Click any note in the tab to start from there.
           Licks are short original exercises in common styles.
         </span>
       </div>

@@ -194,6 +194,9 @@ export function buildExercise(steps, { rootPc, tuning, frets, octaveUp = false }
   return { line: fingered, totalBeats, rootMidi, marks: [...marks.values()] };
 }
 
+/** A pattern's opening move, to show its shape: the notes of the first two beats, at least four. */
+export const openingMove = (line) => line.filter((n, i) => i < 4 || n.start < 2 - 1e-9);
+
 // ── The user's own licks (this device only) ──
 
 const USER_LICKS_KEY = 'chordsheet-bass-licks-v1';
