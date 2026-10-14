@@ -13,6 +13,9 @@ const LINE_STEP = 0.01;      // extraction sweep resolution (s)
 const SHIFT_PENALTY = 3;     // moving the hand > 3 frets between two fretted notes
 const POS_COST = 0.1;        // per fret: prefer lower positions
 const STRING_COST = 0.15;    // per string crossed (a plucking-hand move: cheaper than a higher position)
+const BOX_BELOW = 1;         // with a home fret: the hand covers home-1 … home+2 (one finger per fret)
+const BOX_ABOVE = 2;
+const BOX_COST = 1;          // per fret outside that box
 const LONG_REST = 1;         // s; after this the hand has time to move
 const LONG_REST_SCALE = 0.3;
 
@@ -101,19 +104,23 @@ export function extractLine(notes, follow = 'highest', { step = LINE_STEP, minDu
  * The state also carries where the fretting hand is (the last fretted fret):
  * open strings don't move it, so open E → fret 12 → open E pays for the hand
  * living at the 12th instead of looking like two cheap open-string moves.
+ * With `home` (a fret), the line is played in that hand position instead of as
+ * low as possible: frets in the box around it cost nothing, others cost per fret away.
  * Notes must be within the instrument's range (cleanNotes guarantees it).
  * @returns {{string:number, fret:number}[]} one per note
  */
-export function fingerLine(line, tuning, frets) {
+export function fingerLine(line, tuning, frets, home = null) {
   if (!line.length) return [];
   const cands = line.map((n) => tuning
     .map((open, string) => ({ string, fret: n.midi - open }))
     .filter((p) => p.fret >= 0 && p.fret <= frets));
-  const posCost = (p) => p.fret * POS_COST;
+  const outside = (f) => Math.max(0, home - BOX_BELOW - f, f - home - BOX_ABOVE);
+  const posCost = (p) => (home === null ? p.fret * POS_COST : outside(p.fret) * BOX_COST);
   const handAfter = (p, hand) => (p.fret === 0 ? hand : p.fret);
   const move = (a, hand, b, gap) => {
     const strings = Math.abs(a.string - b.string) * STRING_COST;
     if (b.fret === 0 || hand === null) return strings;
+    if (home !== null && !outside(hand) && !outside(b.fret)) return strings; // fingers move inside the box, the hand doesn't
     const d = Math.abs(b.fret - hand);
     return (d + (d > 3 ? SHIFT_PENALTY : 0)) * (gap > LONG_REST ? LONG_REST_SCALE : 1) + strings;
   };

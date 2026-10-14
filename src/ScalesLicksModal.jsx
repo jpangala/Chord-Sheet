@@ -7,7 +7,7 @@ import { INSTRUMENTS, midiToName, pitchClass, findNoteAt, findNextNote } from '.
 import { ROOTS } from './chords.js';
 import {
   SCALES, ARPEGGIOS, LICKS, DEGREES, SCALE_PATTERNS, ARPEGGIO_PATTERNS, LICK_VARIATIONS, parseSteps, formatSteps,
-  patternBeats, buildExercise, openingMove, loadUserLicks, saveUserLicks,
+  patternBeats, rootPositions, buildExercise, openingMove, loadUserLicks, saveUserLicks,
 } from './bassTheory.js';
 import { createPracticePlayer } from './practicePlayer.js';
 import { Fretboard } from './Fretboard.jsx';
@@ -41,7 +41,7 @@ export function ScalesLicksModal({ onClose }) {
   const [draft, setDraft] = useState(null); // { name, beats, notes: [{midi, string, fret, beats} | {rest, beats}] }
   const [rootPc, setRootPc] = useState(4); // E
   const [tuningId, setTuningId] = useState('standard4');
-  const [octaveUp, setOctaveUp] = useState(false);
+  const [chosenPos, setChosenPos] = useState(null); // { string, fret } where the root starts; null = lowest
   const [bpm, setBpm] = useState(80);
   const [loop, setLoop] = useState(true);
   const [countIn, setCountIn] = useState(true);
@@ -68,9 +68,18 @@ export function ScalesLicksModal({ onClose }) {
     return mine ? variant.apply(parseSteps(mine.steps)) : [];
   }, [tab, variant, scaleId, arpId, lickId, userLicks, myLickId]);
 
+  // The chosen position follows the key: same string, nearest fret (so the box shape moves with the key).
+  const positions = useMemo(() => rootPositions(rootPc, steps, tuning, BASS.frets), [rootPc, steps, tuning]);
+  const position = useMemo(() => {
+    if (!chosenPos) return null;
+    const onString = positions.filter((p) => p.string === chosenPos.string);
+    if (!onString.length) return null;
+    return onString.reduce((best, p) => (Math.abs(p.fret - chosenPos.fret) < Math.abs(best.fret - chosenPos.fret) ? p : best));
+  }, [positions, chosenPos]);
+
   const exercise = useMemo(
-    () => (draft ? draftExercise(draft.notes, rootPc) : buildExercise(steps, { rootPc, tuning, frets: BASS.frets, octaveUp })),
-    [draft, steps, rootPc, tuning, octaveUp],
+    () => (draft ? draftExercise(draft.notes, rootPc) : buildExercise(steps, { rootPc, tuning, frets: BASS.frets, position })),
+    [draft, steps, rootPc, tuning, position],
   );
   const { line, totalBeats, marks } = exercise;
   // Scale/arpeggio variations reorder the same notes, so show the order: the opening move, while stopped.
@@ -231,12 +240,24 @@ export function ScalesLicksModal({ onClose }) {
           <span style={caption}>Key</span>
           {ROOTS.map((r, pc) => <button key={r} style={{ ...pill(rootPc === pc), minWidth: 36 }} onClick={() => setRootPc(pc)}>{r}</button>)}
         </div>
+        {!draft && line.length > 0 && (
+          <div style={row}>
+            <span style={caption}>Position</span>
+            <button style={pill(!position)} onClick={() => setChosenPos(null)} title="As low on the neck as possible">Lowest</button>
+            {positions.map((p) => {
+              const selected = position?.string === p.string && position?.fret === p.fret;
+              return (
+                <button key={`${p.string}:${p.fret}`} style={pill(selected)} onClick={() => setChosenPos({ string: p.string, fret: p.fret })}
+                  title={`Root ${midiToName(p.midi)} on string ${tuning.length - p.string} (${noteNames[p.string]}), ${p.fret ? `fret ${p.fret}` : 'open'}`}>
+                  {noteNames[p.string]} string, {p.fret ? `fret ${p.fret}` : 'open'}
+                </button>
+              );
+            })}
+          </div>
+        )}
         <div style={row}>
-          <span style={caption}>Octave</span>
-          <button style={pill(!octaveUp)} disabled={!!draft} onClick={() => setOctaveUp(false)}>Low</button>
-          <button style={pill(octaveUp)} disabled={!!draft} onClick={() => setOctaveUp(true)}>High</button>
-          <span style={{ ...caption, marginLeft: 12 }}>Tuning</span>
-          <select value={tuningId} onChange={(e) => { setTuningId(e.target.value); setDraft((d) => d && { ...d, notes: [] }); }}
+          <span style={caption}>Tuning</span>
+          <select value={tuningId} onChange={(e) => { setTuningId(e.target.value); setChosenPos(null); setDraft((d) => d && { ...d, notes: [] }); }}
             style={{ padding: 6, borderRadius: 8 }}>
             {Object.entries(BASS.tunings).map(([id, t]) => <option key={id} value={id}>{t.label}</option>)}
           </select>
@@ -261,7 +282,7 @@ export function ScalesLicksModal({ onClose }) {
 
         {line.length > 0
           ? <div style={{ flexShrink: 0 }}><TabStrip line={line} tuning={tuning} noteNames={noteNames} currentIdx={pos.current} nextIdx={pos.next} onSeek={(b) => play(b)} /></div>
-          : !draft && tab !== 'mine' && <p style={hint}>This doesn't fit on the neck in this octave. Try the other octave or key.</p>}
+          : !draft && tab !== 'mine' && <p style={hint}>This doesn't fit on the neck. Try another key or tuning.</p>}
 
         <div style={row}>
           <button onClick={() => (playing ? stop() : play())} disabled={!line.length}

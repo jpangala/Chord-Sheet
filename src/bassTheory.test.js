@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { INSTRUMENTS } from './instruments.js'
 import {
-  SCALES, ARPEGGIOS, LICKS, SCALE_PATTERNS, ARPEGGIO_PATTERNS, LICK_VARIATIONS, parseSteps, formatSteps, scaleSteps, arpeggioSteps, patternBeats, placeRoot, buildExercise, openingMove,
+  SCALES, ARPEGGIOS, LICKS, SCALE_PATTERNS, ARPEGGIO_PATTERNS, LICK_VARIATIONS, parseSteps, formatSteps, scaleSteps, arpeggioSteps, patternBeats, placeRoot, rootPositions, buildExercise, openingMove,
 } from './bassTheory.js'
 
 const FOUR = INSTRUMENTS.bass.tunings.standard4.strings
@@ -110,12 +110,39 @@ describe('placeRoot', () => {
     expect(placeRoot(G, parseSteps('-2/1 0/1'), RANGE)).toBe(31)
     expect(placeRoot(E, parseSteps('-2/1 0/1'), RANGE)).toBe(40) // E1 − 2 is below the low E string
   })
-  it('high octave moves up 12 when it fits, otherwise stays low', () => {
-    expect(placeRoot(E, parseSteps('0/1 12/1'), RANGE, true)).toBe(40)
-    expect(placeRoot(E, parseSteps('0/1 24/1'), RANGE, true)).toBe(28)
-  })
   it('null when the pattern cannot fit', () => {
     expect(placeRoot(E, parseSteps('0/1 40/1'), RANGE)).toBeNull()
+  })
+})
+
+describe('rootPositions', () => {
+  const majorUpDown = scaleSteps(MAJOR)
+  it('lists every place on the neck the root can start, by fret, when the pattern fits from there', () => {
+    expect(rootPositions(C, majorUpDown, FOUR, 20)).toEqual([
+      { string: 1, fret: 3, midi: 36 }, // A string, fret 3
+      { string: 3, fret: 5, midi: 48 }, // G string, fret 5
+      { string: 0, fret: 8, midi: 36 }, // E string, fret 8
+      { string: 2, fret: 10, midi: 48 },
+      { string: 1, fret: 15, midi: 48 },
+    ]) // G17 (C4) would run off the neck; E20 leaves no room for the hand
+  })
+  it('includes open strings', () => {
+    expect(rootPositions(E, majorUpDown, FOUR, 20)[0]).toEqual({ string: 0, fret: 0, midi: 28 })
+  })
+})
+
+describe('buildExercise in a position', () => {
+  const opts = { rootPc: C, tuning: FOUR, frets: 20 }
+  const frets = (position) => buildExercise(scaleSteps(MAJOR), { ...opts, position }).line.slice(0, 8).map((n) => `${n.string}:${n.fret}`).join(' ')
+  it('C major from the A string, 3rd fret stays in that box', () => {
+    expect(frets({ string: 1, fret: 3 })).toBe('1:3 1:5 2:2 2:3 2:5 3:2 3:4 3:5')
+  })
+  it('C major from the E string, 8th fret stays in that box', () => {
+    expect(frets({ string: 0, fret: 8 })).toBe('0:8 0:10 1:7 1:8 1:10 2:7 2:9 2:10')
+  })
+  it('the same box shape moves with the key', () => {
+    const inD = buildExercise(scaleSteps(MAJOR), { ...opts, rootPc: 2, position: { string: 0, fret: 10 } }).line.slice(0, 8)
+    expect(inD.map((n) => `${n.string}:${n.fret}`).join(' ')).toBe('0:10 0:12 1:9 1:10 1:12 2:9 2:11 2:12')
   })
 })
 

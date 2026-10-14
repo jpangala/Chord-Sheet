@@ -154,25 +154,50 @@ export const LICK_VARIATIONS = [
     } },
 ];
 
-/** Lowest root midi (or the next octave up when `high` and it fits) that keeps every note in [low, high]; null if none. */
-export function placeRoot(rootPc, steps, [low, high], high8va = false) {
-  const ivs = steps.filter((s) => !s.rest).map((s) => s.iv);
+const soundingIvs = (steps) => steps.filter((s) => !s.rest).map((s) => s.iv);
+
+/** Lowest root midi that keeps every note in [low, high]; null if none. */
+export function placeRoot(rootPc, steps, [low, high]) {
+  const ivs = soundingIvs(steps);
   const lo = Math.min(0, ...ivs);
   const hi = Math.max(0, ...ivs);
   const fits = [];
   for (let r = low - lo; r + hi <= high; r++) if (pitchClass(r) === rootPc) fits.push(r);
-  if (!fits.length) return null;
-  return high8va && fits.length > 1 ? fits[1] : fits[0];
+  return fits.length ? fits[0] : null;
 }
 
 /**
- * @param {{ rootPc: number, tuning: number[], frets: number, octaveUp?: boolean }} opts
+ * Every place on the neck the pattern can start its root (a "position"), by fret:
+ * the whole pattern must stay in range, and the hand needs room above the root.
+ * @returns {{ string: number, fret: number, midi: number }[]}
+ */
+export function rootPositions(rootPc, steps, tuning, frets) {
+  const ivs = soundingIvs(steps);
+  const lo = Math.min(0, ...ivs);
+  const hi = Math.max(0, ...ivs);
+  const [low, high] = [Math.min(...tuning), Math.max(...tuning) + frets];
+  const out = [];
+  tuning.forEach((open, string) => {
+    for (let fret = 0; fret <= frets - 2; fret++) {
+      const midi = open + fret;
+      if (pitchClass(midi) === rootPc && midi + lo >= low && midi + hi <= high) out.push({ string, fret, midi });
+    }
+  });
+  return out.sort((a, b) => a.fret - b.fret || a.string - b.string);
+}
+
+/**
+ * `position` (from rootPositions) plays the pattern from that root in that hand position;
+ * without it, from the lowest root that fits, as low on the neck as possible.
+ * @param {{ rootPc: number, tuning: number[], frets: number, position?: {string: number, fret: number} }} opts
  * @returns {{ line: object[], totalBeats: number, rootMidi: number|null, marks: {string, fret, label, root}[] }}
  */
-export function buildExercise(steps, { rootPc, tuning, frets, octaveUp = false }) {
+export function buildExercise(steps, { rootPc, tuning, frets, position = null }) {
   const totalBeats = patternBeats(steps);
-  const rootMidi = placeRoot(rootPc, steps, [Math.min(...tuning), Math.max(...tuning) + frets], octaveUp);
-  if (rootMidi === null) return { line: [], totalBeats, rootMidi, marks: [] };
+  const range = [Math.min(...tuning), Math.max(...tuning) + frets];
+  const rootMidi = position ? tuning[position.string] + position.fret : placeRoot(rootPc, steps, range);
+  const fits = rootMidi !== null && soundingIvs(steps).every((iv) => rootMidi + iv >= range[0] && rootMidi + iv <= range[1]);
+  if (!fits) return { line: [], totalBeats, rootMidi: null, marks: [] };
 
   const line = [];
   let t = 0;
@@ -183,7 +208,7 @@ export function buildExercise(steps, { rootPc, tuning, frets, octaveUp = false }
     }
     t += s.beats;
   }
-  const positions = fingerLine(line, tuning, frets);
+  const positions = fingerLine(line, tuning, frets, position ? position.fret : null);
   const fingered = line.map((n, i) => ({ ...n, ...positions[i] }));
 
   const marks = new Map();
