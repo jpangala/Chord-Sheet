@@ -7,7 +7,7 @@ import { ChordPicker } from './ChordPicker.jsx';
 import { AudioImportModal } from './AudioImportModal.jsx';
 import { LiveChordTest } from './LiveChordTest.jsx';
 import { InstrumentVisualizerModal } from './InstrumentVisualizerModal.jsx';
-import { ScalesLicksModal } from './ScalesLicksModal.jsx';
+import { ScalesLicksModal, MODES as SCALES_MODES } from './ScalesLicksModal.jsx';
 import { HumToNotesModal } from './HumToNotesModal.jsx';
 
 const CLOUD_ON = isCloudEnabled();
@@ -445,17 +445,20 @@ function LibraryScreen({ songs, onOpen, onNew, onDuplicate, onDelete, onPullFrom
               display: "inline-flex", alignItems: "center", gap: 6, minHeight: 34,
             }}
           >🎸 Learn a line</button>
-          <button
-            onClick={onOpenScalesLicks}
-            title="Practice bass scales, arpeggios and licks in any key with a play-along synth and click"
-            style={{
-              padding: "7px 14px", borderRadius: 8,
-              border: "1px solid var(--color-border-strong)",
-              background: "var(--color-surface)", color: "var(--color-text)",
-              fontSize: 13, fontWeight: 500, cursor: "pointer",
-              display: "inline-flex", alignItems: "center", gap: 6, minHeight: 34,
-            }}
-          >🎼 Scales & licks</button>
+          {Object.entries(SCALES_MODES).map(([mode, label]) => (
+            <button
+              key={mode}
+              onClick={() => onOpenScalesLicks(mode)}
+              title={`Practice bass ${label.toLowerCase()} in any key with a play-along synth and click`}
+              style={{
+                padding: "7px 14px", borderRadius: 8,
+                border: "1px solid var(--color-border-strong)",
+                background: "var(--color-surface)", color: "var(--color-text)",
+                fontSize: 13, fontWeight: 500, cursor: "pointer",
+                display: "inline-flex", alignItems: "center", gap: 6, minHeight: 34,
+              }}
+            >🎼 {label}</button>
+          ))}
           <button
             onClick={onOpenHumToNotes}
             title="Hum or sing into the mic and see the notes on a bass or guitar fretboard"
@@ -974,7 +977,7 @@ export default function App() {
   const [audioImportOpen, setAudioImportOpen] = useState(false);
   const [liveChordTestOpen, setLiveChordTestOpen] = useState(false);
   const [instrumentVizOpen, setInstrumentVizOpen] = useState(false);
-  const [scalesLicksOpen, setScalesLicksOpen] = useState(false);
+  const [scalesLicksMode, setScalesLicksMode] = useState(null); // null | 'scales' | 'arpeggios' | 'licks' | 'mine'
   const [humOpen, setHumOpen] = useState(false);
 
   const addSectionFromAudio = useCallback((sectionDraft, detectedBpm, shouldUpdateBpm) => {
@@ -1133,7 +1136,7 @@ export default function App() {
           cloudStatus={cloudStatus}
           onOpenLiveChordTest={() => setLiveChordTestOpen(true)}
           onOpenInstrumentViz={() => setInstrumentVizOpen(true)}
-          onOpenScalesLicks={() => setScalesLicksOpen(true)}
+          onOpenScalesLicks={setScalesLicksMode}
           onOpenHumToNotes={() => setHumOpen(true)}
         />
       )}
@@ -1186,7 +1189,7 @@ export default function App() {
         <LiveChordTest onClose={() => setLiveChordTestOpen(false)} />
       )}
       {instrumentVizOpen && <InstrumentVisualizerModal onClose={() => setInstrumentVizOpen(false)} />}
-      {scalesLicksOpen && <ScalesLicksModal onClose={() => setScalesLicksOpen(false)} />}
+      {scalesLicksMode && <ScalesLicksModal mode={scalesLicksMode} onClose={() => setScalesLicksMode(null)} />}
       {humOpen && <HumToNotesModal onClose={() => setHumOpen(false)} />}
     </>
   );

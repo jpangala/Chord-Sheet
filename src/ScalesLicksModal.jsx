@@ -1,5 +1,5 @@
-// Scales & licks trainer for bass. Pick a scale, arpeggio or lick, a key and a
-// tempo; the synth plays it with a click while the fretboard and tab follow
+// Scales & licks trainer for bass. Each mode (scales, arpeggios, licks, my licks)
+// opens on its own. Pick an item, a key and a tempo; the synth plays it with a click while the fretboard and tab follow
 // along (mute the synth to play it yourself). "My licks" are tapped onto the
 // fretboard and saved on this device, relative to the key so they transpose.
 import { useState, useRef, useEffect, useMemo } from 'react';
@@ -14,7 +14,7 @@ import { Fretboard } from './Fretboard.jsx';
 import { TabStrip } from './TabStrip.jsx';
 
 const BASS = INSTRUMENTS.bass;
-const TABS = { scales: 'Scales', arpeggios: 'Arpeggios', licks: 'Licks', mine: 'My licks' };
+export const MODES = { scales: 'Scales', arpeggios: 'Arpeggios', licks: 'Licks', mine: 'My licks' };
 const DURATIONS = [[0.25, '1/16'], [0.5, '1/8'], [1, '1/4'], [2, '1/2'], [4, 'Whole']];
 const VARIATIONS = { scales: SCALE_PATTERNS, arpeggios: ARPEGGIO_PATTERNS, licks: LICK_VARIATIONS, mine: LICK_VARIATIONS };
 const NO_POS = { current: -1, next: -1, count: null, yourTurn: false };
@@ -30,8 +30,8 @@ function draftExercise(notes, rootPc) {
   return { line, totalBeats: patternBeats(notes), marks: [] };
 }
 
-export function ScalesLicksModal({ onClose }) {
-  const [tab, setTab] = useState('scales');
+export function ScalesLicksModal({ mode, onClose }) {
+  const tab = mode;
   const [scaleId, setScaleId] = useState('major');
   const [arpId, setArpId] = useState('maj7');
   const [lickId, setLickId] = useState(LICKS[0].id);
@@ -175,14 +175,8 @@ export function ScalesLicksModal({ onClose }) {
         boxShadow: '0 16px 48px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', gap: 14,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-text)' }}>Scales & licks</span>
+          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-text)' }}>{MODES[mode]}</span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--color-text-2)', padding: '0 4px', lineHeight: 1 }}>×</button>
-        </div>
-
-        <div style={row}>
-          {Object.entries(TABS).map(([id, label]) => (
-            <button key={id} style={pill(tab === id)} disabled={!!draft} onClick={() => setTab(id)}>{label}</button>
-          ))}
         </div>
 
         {tab === 'scales' && <div style={row}>{choices(SCALES, scaleId, setScaleId)}</div>}
