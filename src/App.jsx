@@ -7,6 +7,8 @@ import { ChordPicker } from './ChordPicker.jsx';
 import { AudioImportModal } from './AudioImportModal.jsx';
 import { LiveChordTest } from './LiveChordTest.jsx';
 import { InstrumentVisualizerModal } from './InstrumentVisualizerModal.jsx';
+import { ScalesLicksModal } from './ScalesLicksModal.jsx';
+import { HumToNotesModal } from './HumToNotesModal.jsx';
 
 const CLOUD_ON = isCloudEnabled();
 
@@ -361,7 +363,7 @@ const cardIconBtn = {
   display: "flex", alignItems: "center", justifyContent: "center",
 };
 
-function LibraryScreen({ songs, onOpen, onNew, onDuplicate, onDelete, onPullFromCloud, cloudStatus, onOpenLiveChordTest, onOpenInstrumentViz }) {
+function LibraryScreen({ songs, onOpen, onNew, onDuplicate, onDelete, onPullFromCloud, cloudStatus, onOpenLiveChordTest, onOpenInstrumentViz, onOpenScalesLicks, onOpenHumToNotes }) {
   const [q, setQ] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(null);
 
@@ -443,6 +445,28 @@ function LibraryScreen({ songs, onOpen, onNew, onDuplicate, onDelete, onPullFrom
               display: "inline-flex", alignItems: "center", gap: 6, minHeight: 34,
             }}
           >🎸 Learn a line</button>
+          <button
+            onClick={onOpenScalesLicks}
+            title="Practice bass scales, arpeggios and licks in any key with a play-along synth and click"
+            style={{
+              padding: "7px 14px", borderRadius: 8,
+              border: "1px solid var(--color-border-strong)",
+              background: "var(--color-surface)", color: "var(--color-text)",
+              fontSize: 13, fontWeight: 500, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", gap: 6, minHeight: 34,
+            }}
+          >🎼 Scales & licks</button>
+          <button
+            onClick={onOpenHumToNotes}
+            title="Hum or sing into the mic and see the notes on a bass or guitar fretboard"
+            style={{
+              padding: "7px 14px", borderRadius: 8,
+              border: "1px solid var(--color-border-strong)",
+              background: "var(--color-surface)", color: "var(--color-text)",
+              fontSize: 13, fontWeight: 500, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", gap: 6, minHeight: 34,
+            }}
+          >🎙 Hum to notes</button>
           <button
             onClick={onNew}
             style={{
@@ -950,6 +974,8 @@ export default function App() {
   const [audioImportOpen, setAudioImportOpen] = useState(false);
   const [liveChordTestOpen, setLiveChordTestOpen] = useState(false);
   const [instrumentVizOpen, setInstrumentVizOpen] = useState(false);
+  const [scalesLicksOpen, setScalesLicksOpen] = useState(false);
+  const [humOpen, setHumOpen] = useState(false);
 
   const addSectionFromAudio = useCallback((sectionDraft, detectedBpm, shouldUpdateBpm) => {
     patchCurrent((s) => {
@@ -1107,6 +1133,8 @@ export default function App() {
           cloudStatus={cloudStatus}
           onOpenLiveChordTest={() => setLiveChordTestOpen(true)}
           onOpenInstrumentViz={() => setInstrumentVizOpen(true)}
+          onOpenScalesLicks={() => setScalesLicksOpen(true)}
+          onOpenHumToNotes={() => setHumOpen(true)}
         />
       )}
       {view === "setup" && (
@@ -1158,6 +1186,8 @@ export default function App() {
         <LiveChordTest onClose={() => setLiveChordTestOpen(false)} />
       )}
       {instrumentVizOpen && <InstrumentVisualizerModal onClose={() => setInstrumentVizOpen(false)} />}
+      {scalesLicksOpen && <ScalesLicksModal onClose={() => setScalesLicksOpen(false)} />}
+      {humOpen && <HumToNotesModal onClose={() => setHumOpen(false)} />}
     </>
   );
 }

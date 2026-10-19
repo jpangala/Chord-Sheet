@@ -98,6 +98,9 @@ describe('fingerLine', () => {
   it('fingers a bass line', () => {
     expect(fmt(fingerLine(seq([28, 28, 31, 33, 35, 33, 31, 28]), BASS4, 20))).toBe('0:0 0:0 0:3 1:0 1:2 1:0 0:3 0:0')
   })
+  it('plays octaves from an open string in low position, not at the 12th fret', () => {
+    expect(fmt(fingerLine(seq([28, 40, 28, 40, 28, 40]), BASS4, 20))).toBe('0:0 2:2 0:0 2:2 0:0 2:2')
+  })
   it('every position sounds exactly the transcribed pitch', () => {
     const line = seq([45, 48, 50, 52, 55, 57, 60, 62, 64, 67, 69, 72])
     fingerLine(line, STD, 20).forEach((p, i) => expect(STD[p.string] + p.fret).toBe(line[i].midi))
